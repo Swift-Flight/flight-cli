@@ -557,52 +557,6 @@ DerivedData/
 .netrc
 
 """#,
-            ".vscode/launch.json": #"""
-{
-    "configurations": [
-        {
-            "type": "swift",
-            "request": "launch",
-            "args": [],
-            "cwd": "${workspaceFolder:Demo}",
-            "name": "Debug FlightDemo",
-            "target": "FlightDemo",
-            "configuration": "debug",
-            "preLaunchTask": "swift: Build Debug FlightDemo"
-        },
-        {
-            "type": "swift",
-            "request": "launch",
-            "args": [],
-            "cwd": "${workspaceFolder:Demo}",
-            "name": "Release FlightDemo",
-            "target": "FlightDemo",
-            "configuration": "release",
-            "preLaunchTask": "swift: Build Release FlightDemo"
-        },
-        {
-            "type": "swift",
-            "request": "launch",
-            "args": [],
-            "cwd": "${workspaceFolder:Demo}",
-            "name": "Debug migrate",
-            "target": "migrate",
-            "configuration": "debug",
-            "preLaunchTask": "swift: Build Debug migrate"
-        },
-        {
-            "type": "swift",
-            "request": "launch",
-            "args": [],
-            "cwd": "${workspaceFolder:Demo}",
-            "name": "Release migrate",
-            "target": "migrate",
-            "configuration": "release",
-            "preLaunchTask": "swift: Build Release migrate"
-        }
-    ]
-}
-"""#,
             "Package.swift": #"""
 // swift-tools-version: 6.3
 import PackageDescription

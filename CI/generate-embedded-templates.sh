@@ -16,13 +16,22 @@ cd "$(dirname "$0")/.."
 
 out="Sources/flight/EmbeddedTemplates.swift"
 tmp="$(mktemp)"
-trap 'rm -f "$tmp"' EXIT
+trap 'rm -f "$tmp" "$tmp.files"' EXIT
 
-python3 - "$tmp" <<'PY'
+# Enumerated from git, not the filesystem: a file that is ignored locally —
+# .vscode/, an editor backup, a stray build artifact — would otherwise be
+# embedded on one machine and absent on another, and the --check in CI would
+# report the committed file as stale for a reason nobody could see.
+git ls-files templates > "$tmp.files"
+
+python3 - "$tmp" "$tmp.files" <<'PY'
 import pathlib, sys
 
 out = pathlib.Path(sys.argv[1])
 root = pathlib.Path("templates")
+tracked = {
+    line.strip() for line in pathlib.Path(sys.argv[2]).read_text().splitlines() if line.strip()
+}
 
 def swift_literal(text: str) -> str:
     # A raw string with enough pounds that the content cannot terminate it.
@@ -49,10 +58,10 @@ for tier in sorted(p.name for p in root.iterdir() if p.is_dir()):
     lines.append(f'        "{tier}": [')
     tier_root = root / tier
     for f in sorted(tier_root.rglob("*")):
-        if not f.is_file():
+        if not f.is_file() or f.as_posix() not in tracked:
             continue
         rel = f.relative_to(tier_root).as_posix()
-        if rel.startswith(".build/") or rel == "Package.resolved":
+        if rel == "Package.resolved":
             continue
         text = f.read_text()
         lines.append(f'            "{rel}": {swift_literal(text)},')
