@@ -25,8 +25,8 @@ let package = Package(
         .executable(name: "App", targets: ["App"])
     ],
     dependencies: [
-        .package(url: "https://github.com/Swift-Flight/flight.git", from: "0.1.1", traits: ["Web"]),
-        .package(url: "https://github.com/Swift-Flight/flight-data.git", from: "0.1.1", traits: ["Postgres"]),
+        .package(url: "https://github.com/Swift-Flight/flight.git", from: "0.1.2", traits: ["Web"]),
+        .package(url: "https://github.com/Swift-Flight/flight-data.git", from: "0.1.2", traits: ["Postgres"]),
     ],
     targets: [
         .executableTarget(
@@ -369,23 +369,25 @@ struct HealthControllerTests {
 }
 
 """#,
-            "Tests/AppTests/UserControllerTests.swift": #"""
-import FlightCore
-import FlightWeb
-import FlightWebTesting
+            "Tests/AppTests/InMemoryUsers.swift": #"""
 import Foundation
 import Synchronization
-import Testing
 
 @testable import App
 
-/// An in-memory repository, so this suite exercises the real controller, the
-/// real routing, the real dependency injection, and the real JSON encoding
-/// with no database in the loop.
-private final class InMemoryUsers: UserRepositoryProtocol, Sendable {
+/// A repository that keeps rows in memory.
+///
+/// This is what makes the suites in this target run with no database: they
+/// depend on `UserRepositoryProtocol`, and this satisfies it. There is no mock
+/// framework and nothing generated — a fake is a type that conforms.
+final class InMemoryUsers: UserRepositoryProtocol, Sendable {
     private let users = Mutex<[User]>([])
 
     init(_ seed: [User] = []) { users.withLock { $0 = seed } }
+
+    /// What the suite wrote, for asserting on effects rather than only on
+    /// what a handler returned.
+    var stored: [User] { users.withLock { $0 } }
 
     func all() async throws -> [User] { users.withLock { $0 } }
 
@@ -405,90 +407,115 @@ private final class InMemoryUsers: UserRepositoryProtocol, Sendable {
     }
 }
 
-/// Only the bottommost seam is swapped. The controller is registered through
-/// its ordinary macro-generated thunk, exactly as `flightRegisterAll` would
-/// register it in production.
-private struct TestModule: FlightModule {
-    static let ada = User(
-        id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
-        name: "Ada", email: "ada@example.com", createdAt: Date(), updatedAt: Date())
+/// The one fixture row the suites share.
+let ada = User(
+    id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
+    name: "Ada", email: "ada@example.com", createdAt: Date(), updatedAt: Date())
 
+"""#,
+            "Tests/AppTests/UserControllerTests.swift": #"""
+import FlightCore
+import FlightWeb
+import FlightWebTesting
+import Foundation
+import Testing
+
+@testable import App
+
+/// The controller, its routes, and its status codes — with a fake repository
+/// underneath and no database anywhere.
+///
+/// `Components` registers exactly the components under test, the same way the
+/// application registers them; the fake is registered under the protocol the
+/// controller depends on. Routing, middleware, dependency injection, request
+/// decoding, and JSON encoding all run for real. `TestClient` dispatches in
+/// process, so there is no socket and no port to collide with — the tests are
+/// fast because the network is absent, not because the framework is stubbed.
+@Suite("User routes")
+struct UserControllerTests {
+
+    private func client(_ users: InMemoryUsers = InMemoryUsers([ada])) throws -> TestClient {
+        let container = try TestContainer.build {
+            Components(UserController.self)
+            Fake(users)
+        }
+        return try TestClient(container: container)
+    }
+
+    @Test("listing returns the rows the repository holds")
+    func list() async throws {
+        let response = await (try client()).get("/users")
+        #expect(response.status == .ok)
+        #expect(try response.decodeJSON([UserPayload].self).map(\.name) == ["Ada"])
+    }
+
+    @Test("fetching by id returns that user")
+    func getByID() async throws {
+        let response = await (try client()).get("/users/\(ada.id)")
+        #expect(response.status == .ok)
+        #expect(try response.decodeJSON(UserPayload.self).email == ada.email)
+    }
+
+    @Test("an id that is not a UUID is a 400, not a 500")
+    func malformedID() async throws {
+        #expect(await (try client()).get("/users/not-a-uuid").status == .badRequest)
+    }
+
+    @Test("an unknown id is a 404")
+    func unknownID() async throws {
+        #expect(await (try client()).get("/users/\(UUID())").status == .notFound)
+    }
+
+    @Test("creating a user returns 201, and the row is really stored")
+    func create() async throws {
+        let users = InMemoryUsers()
+        let response = try await client(users).post(
+            "/users", json: CreateUserRequest(name: "Grace", email: "grace@example.com"))
+
+        #expect(response.status == .created)
+        #expect(try response.decodeJSON(UserPayload.self).name == "Grace")
+        // Asserting on the effect, not just the response: the fake is a real
+        // object a test can interrogate afterwards.
+        #expect(users.stored.map(\.email) == ["grace@example.com"])
+    }
+
+    @Test("an invalid email is refused before any SQL would run")
+    func invalidEmail() async throws {
+        let users = InMemoryUsers()
+        let response = try await client(users).post(
+            "/users", json: CreateUserRequest(name: "Nope", email: "not-an-email"))
+
+        #expect(response.status == .badRequest)
+        #expect(users.stored.isEmpty, "validation must run before the write")
+    }
+
+    @Test("a duplicate email is a conflict, not a second row")
+    func duplicateEmail() async throws {
+        let users = InMemoryUsers([ada])
+        let response = try await client(users).post(
+            "/users", json: CreateUserRequest(name: "Ada Again", email: ada.email))
+
+        #expect(response.status == .conflict)
+        #expect(users.stored.count == 1)
+    }
+}
+
+/// Registers the fake under the protocol the controller depends on.
+private struct Fake: FlightModule {
     let users: InMemoryUsers
-
-    init() { self.users = InMemoryUsers([Self.ada]) }
+    init() { self.users = InMemoryUsers() }
+    init(_ users: InMemoryUsers) { self.users = users }
 
     func configure(_ container: Container) throws {
-        try UserController._flightRegister(container)
         let users = self.users
         container.register((any UserRepositoryProtocol).self, scope: .scoped) { _ in users }
     }
 }
 
-@Suite("User routes — repository faked, everything above it real")
-struct UserControllerTests {
-
-    private func client() throws -> TestClient {
-        try TestClient(container: TestContainer.build { TestModule() })
-    }
-
-    @Test("listing returns the seeded user")
-    func list() async throws {
-        let client = try client()
-        let response = await client.get("/users")
-        #expect(response.status == .ok)
-        #expect(try response.decodeJSON([UserPayload].self).count == 1)
-    }
-
-    @Test("fetching by id returns that user")
-    func getByID() async throws {
-        let client = try client()
-        let response = await client.get("/users/\(TestModule.ada.id)")
-        #expect(response.status == .ok)
-        #expect(try response.decodeJSON(UserPayload.self).email == "ada@example.com")
-    }
-
-    @Test("an id that is not a UUID is a 400, not a 500")
-    func malformedID() async throws {
-        let client = try client()
-        #expect(await client.get("/users/not-a-uuid").status == .badRequest)
-    }
-
-    @Test("an unknown id is a 404")
-    func unknownID() async throws {
-        let client = try client()
-        #expect(await client.get("/users/\(UUID())").status == .notFound)
-    }
-
-    @Test("creating a user returns 201 and the new row")
-    func create() async throws {
-        let client = try client()
-        let response = try await client.post(
-            "/users", json: CreateUserRequest(name: "Grace", email: "grace@example.com"))
-        #expect(response.status == .created)
-        #expect(try response.decodeJSON(UserPayload.self).name == "Grace")
-    }
-
-    @Test("an invalid email is refused before any SQL would run")
-    func invalidEmail() async throws {
-        let client = try client()
-        let response = try await client.post(
-            "/users", json: CreateUserRequest(name: "Nope", email: "not-an-email"))
-        #expect(response.status == .badRequest)
-    }
-
-    @Test("a duplicate email is a conflict, not a second row")
-    func duplicateEmail() async throws {
-        let client = try client()
-        let response = try await client.post(
-            "/users", json: CreateUserRequest(name: "Ada Again", email: "ada@example.com"))
-        #expect(response.status == .conflict)
-    }
-}
-
 /// Entities are `Encodable` but deliberately not `Decodable`: once an
-/// association has crossed the wire as `null`, "not preloaded" and "preloaded
-/// and empty" are indistinguishable, and the type refuses to guess. Models go
-/// out as JSON; what comes back in is a type of its own.
+/// association has crossed the wire as `null`, "not loaded" and "loaded and
+/// empty" are indistinguishable, and the type refuses to guess. Models go out
+/// as JSON; what comes back in is a type of its own.
 private struct UserPayload: Decodable {
     let id: UUID
     let name: String
@@ -594,8 +621,8 @@ let package = Package(
     dependencies: [
         // "defaults" keeps the Web trait on; "Security" adds the resource
         // server. Naming any trait means "default" must be named too.
-        .package(url: "https://github.com/Swift-Flight/flight.git", from: "0.1.1", traits: ["Security"]),
-        .package(url: "https://github.com/Swift-Flight/flight-data.git", from: "0.1.1", traits: ["Postgres"]),
+        .package(url: "https://github.com/Swift-Flight/flight.git", from: "0.1.2", traits: ["Security"]),
+        .package(url: "https://github.com/Swift-Flight/flight-data.git", from: "0.1.2", traits: ["Postgres"]),
     ],
     targets: [
         .executableTarget(
@@ -3128,6 +3155,7 @@ extension Room {
 
 """#,
             "Tests/AppTests/Support/MockUserRepository.swift": #"""
+import FlightCore
 import FlightDataPostgres
 import Foundation
 import Synchronization
@@ -3170,6 +3198,19 @@ final class MockUserRepository: UserRepositoryProtocol, Sendable {
     }
 }
 
+/// Binds the fake under the same key the application binds the real
+/// repository under.
+struct FakeRepository: FlightModule {
+    let repository: MockUserRepository
+    init() { self.repository = MockUserRepository(users: []) }
+    init(_ repository: MockUserRepository) { self.repository = repository }
+
+    func configure(_ container: Container) throws {
+        let repository = self.repository
+        container.register((any UserRepositoryProtocol).self, scope: .scoped) { _ in repository }
+    }
+}
+
 """#,
             "Tests/AppTests/UserControllerTests.swift": #"""
 import FlightCore
@@ -3179,37 +3220,26 @@ import Foundation
 import Testing
 @testable import App
 
-/// A test-only module: mounts the REAL `UserController` and the REAL
-/// `UserService` — both via their ordinary macro-generated
-/// `_flightRegister` thunks, exactly as `flightRegisterAll` would in
-/// production. Only the bottommost seam is swapped: the existential
-/// `(any UserRepositoryProtocol)` key resolves to `MockUserRepository`
-/// instead of `AppModule`'s real, Postgres-backed bridge. No database
-/// anywhere in this suite.
-private struct TestModule: FlightModule {
-    static let ada = User(
-        id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
-        name: "Ada", email: "ada@example.com", createdAt: Date(), updatedAt: Date())
+/// UserController and UserService, with a fake repository underneath.
+///
+/// `Components` registers exactly what is under test, the same way the
+/// application registers it. Routing, middleware, dependency injection, and
+/// JSON encoding all run for real; only the database is absent.
+let ada = User(
+    id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
+    name: "Ada", email: "ada@example.com", createdAt: Date(), updatedAt: Date())
 
-    func configure(_ container: Container) throws {
-        try UserController._flightRegister(container)
-        try UserService._flightRegister(container)
-        container.register((any UserRepositoryProtocol).self, scope: .scoped) { _ in
-            MockUserRepository(users: [Self.ada])
-        }
-    }
-}
-
-/// UserController against a MOCKED UserService — dispatched through
-/// TestClient (in-process, no socket), so routing, middleware, DI, and JSON
-/// encoding are all exercised for real; only Postgres is out of the loop.
 @Suite("UserController — repository mocked, everything above it real")
 struct UserControllerTests {
     @Test("GET /user/:id returns the mocked user as JSON")
     func getUserReturnsMockedUser() async throws {
-        let client = try TestClient(container: TestContainer.build { TestModule() })
+        let container = try TestContainer.build {
+            Components(UserController.self, UserService.self)
+            FakeRepository(MockUserRepository(users: [ada]))
+        }
+        let client = try TestClient(container: container)
 
-        let response = await client.get("/user/\(TestModule.ada.id)")
+        let response = await client.get("/user/\(ada.id)")
 
         #expect(response.status == .ok)
         // Decoded into a wire-shaped struct, not back into `User`. An entity
@@ -3219,15 +3249,19 @@ struct UserControllerTests {
         // refuses to guess. Models go out as JSON; what comes back in is a
         // type of its own.
         let decoded = try response.decodeJSON(UserPayload.self)
-        #expect(decoded.id == TestModule.ada.id)
-        #expect(decoded.name == TestModule.ada.name)
-        #expect(decoded.email == TestModule.ada.email)
+        #expect(decoded.id == ada.id)
+        #expect(decoded.name == ada.name)
+        #expect(decoded.email == ada.email)
         #expect(decoded.authored == nil)
     }
 
     @Test("GET /user/:id 404s when the mocked repository has no match")
     func getUserReturnsNotFoundWhenMissing() async throws {
-        let client = try TestClient(container: TestContainer.build { TestModule() })
+        let container = try TestContainer.build {
+            Components(UserController.self, UserService.self)
+            FakeRepository(MockUserRepository(users: [ada]))
+        }
+        let client = try TestClient(container: container)
 
         let response = await client.get("/user/\(UUID())")
 
@@ -3247,26 +3281,23 @@ private struct UserPayload: Decodable {
 """#,
             "Tests/AppTests/UserServiceTests.swift": #"""
 import FlightCore
+import FlightWebTesting
 import Foundation
 import Testing
 @testable import App
 
-/// UserService against a MOCKED repository — through a real (if minimal)
-/// Container, because UserService is `@Service` again: its only initializer
-/// is the macro-generated `init(_flight:)`, so it's constructed by
-/// resolving it, exactly as production does. Only the repository is fake.
+/// UserService with a fake repository underneath it.
+///
+/// The service is registered and resolved exactly as the application does it,
+/// so its own wiring — scope, stereotype, injected properties — is under test
+/// rather than bypassed. Only the repository is replaced.
 @Suite("UserService — repository mocked")
 struct UserServiceTests {
-    /// UserService on its ordinary @Service path; the mocked repository
-    /// bound under the same existential key `AppModule` binds the real one
-    /// under (see Main.swift). Everything about UserService's own wiring —
-    /// registration, scope, stereotype — is untouched.
     private func makeContainer(repository: MockUserRepository) throws -> Container {
-        let container = Container()
-        container.register((any UserRepositoryProtocol).self, scope: .scoped) { _ in repository }
-        try UserService._flightRegister(container)
-        try container.freeze()
-        return container
+        try TestContainer.build {
+            Components(UserService.self)
+            FakeRepository(repository)
+        }
     }
 
     @Test("find(byID:) returns the matching user from the mocked repository")
@@ -3367,7 +3398,7 @@ let package = Package(
         // resolved. "Web" is HTTP, WebSockets, Channels and Presence; add
         // "Security" for authentication. Naming neither gives you just the
         // container and lifecycle.
-        .package(url: "https://github.com/Swift-Flight/flight.git", from: "0.1.1", traits: ["Web"])
+        .package(url: "https://github.com/Swift-Flight/flight.git", from: "0.1.2", traits: ["Web"])
     ],
     targets: [
         .executableTarget(
