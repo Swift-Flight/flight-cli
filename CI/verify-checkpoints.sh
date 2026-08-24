@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+#
+# Runs the tutorial's checkpoints for real.
+#
+# Each Part of TUTORIAL.md ends its stages with a "### Checkpoint" — a command
+# and what you should see. Those are the tutorial's strongest feature and were
+# its least verified part: verify-tutorial.sh checks that paths exist and
+# symbols resolve, which is why `swift run migrate up` and `migrate down` sat
+# in a checkpoint for weeks despite neither being a subcommand.
+#
+# This extracts every checkpoint block, runs it in the tier that Part builds,
+# and fails if any command exits non-zero.
+#
+# What it does NOT check: the `# → …` comments. A curl that returns 404 still
+# exits 0, so the commands are proven to *run*, not to produce what the
+# tutorial claims. Asserting on output would mean parsing prose; the tests in
+# each template cover the behaviour instead.
+#
+# Some checkpoints are interactive by design — Stage 1.3's is `swift run App`,
+# which serves until you press Ctrl-C. Those cannot "finish", so every block
+# runs under a timeout and a block still running when it expires counts as a
+# pass: a server that is up after the deadline is a server that started.
+#
+# Needs FLIGHT_TEST_DATABASE_URL for Part 2 onward. Skips those, loudly,
+# without it.
+#
+set -uo pipefail
+cd "$(dirname "$0")/.."
+here="$(pwd)"
+
+swift build --product flight >/dev/null || exit 1
+cli="$(swift build --product flight --show-bin-path)/flight"
+scratch="$(mktemp -d)"
+trap 'rm -rf "$scratch"' EXIT
+
+# Part -> tier. Part 1 builds the skeleton, Part 2 the basics, Part 3 the demo.
+tier_for() {
+  case "$1" in 1) echo skeleton ;; 2) echo basics ;; *) echo demo ;; esac
+}
+
+# Split TUTORIAL.md into checkpoint blocks tagged with their Part.
+python3 - "$here/TUTORIAL.md" "$scratch" <<'PY'
+import pathlib, re, sys
+text = pathlib.Path(sys.argv[1]).read_text()
+out = pathlib.Path(sys.argv[2])
+part, n = 0, 0
+lines, block, in_block, seen_checkpoint = text.splitlines(), [], False, False
+for line in lines:
+    m = re.match(r"^# Part (\d+)", line)
+    if m:
+        part = int(m.group(1))
+    if line.startswith("### Checkpoint"):
+        seen_checkpoint = True
+        continue
+    if seen_checkpoint and line.startswith("```bash"):
+        in_block, block = True, []
+        continue
+    if in_block and line.startswith("```"):
+        n += 1
+        (out / f"cp{n:02d}.part{part}.sh").write_text("\n".join(block) + "\n")
+        in_block, seen_checkpoint = False, False
+        continue
+    if in_block:
+        block.append(line)
+print(n)
+PY
+
+total=0; failed=0; skipped=0
+# An optional filter, because a full pass generates and builds a project per
+# checkpoint and takes minutes:  ./CI/verify-checkpoints.sh cp05
+filter="${1:-}"
+
+for f in "$scratch"/cp*.sh; do
+  [ -e "$f" ] || continue
+  if [ -n "$filter" ] && [[ "$(basename "$f")" != *"$filter"* ]]; then continue; fi
+  total=$((total + 1))
+  name=$(basename "$f")
+  part=$(echo "$name" | sed -E 's/.*\.part([0-9]+)\.sh/\1/')
+  tier=$(tier_for "$part")
+
+  if [ "$part" != "1" ] && [ -z "${FLIGHT_TEST_DATABASE_URL:-}" ]; then
+    echo "  ~ $name (Part $part) — skipped, no FLIGHT_TEST_DATABASE_URL"
+    skipped=$((skipped + 1))
+    continue
+  fi
+
+  # A fresh project per checkpoint: they are meant to be run in order from a
+  # clean start, and sharing one would let an earlier failure hide a later.
+  work="$scratch/run-$name"
+  "$cli" new App --tier "$tier" --path "$work" >/dev/null 2>&1
+
+  # The tutorial hardcodes a local database URL; CI's is elsewhere.
+  if [ -n "${FLIGHT_TEST_DATABASE_URL:-}" ]; then
+    sed -i "s|^export FLIGHT_DATABASE_URL=.*|export FLIGHT_DATABASE_URL=$FLIGHT_TEST_DATABASE_URL|" "$f"
+    export FLIGHT_DATABASE_URL="$FLIGHT_TEST_DATABASE_URL"
+  fi
+
+  # `set -m` because checkpoints background a server and then `kill %1`, which
+  # needs job control that non-interactive shells leave off. The `-e` must be
+  # on the inner `bash` running the block, not on the wrapper: a `set -e` in
+  # the wrapper does not reach a child shell, so a command failing mid-block
+  # would be ignored and the block's status taken from its last line.
+  #
+  # The build inside a fresh project dominates the budget, so warm it first
+  # and time only the checkpoint itself.
+  (cd "$work" && swift build) >"$scratch/$name.build.log" 2>&1
+
+  timeout --signal=INT --kill-after=10s "${CHECKPOINT_TIMEOUT:-90}s" \
+    bash -c "cd '$work' && set -em && bash -e '$f'" \
+    >"$scratch/$name.log" 2>&1
+  status=$?
+
+  case $status in
+    0)   echo "  ✔ $name (Part $part, $tier)" ;;
+    124|130)
+         # Timed out or interrupted: an interactive checkpoint that was still
+         # serving. That is the pass condition for those.
+         echo "  ✔ $name (Part $part, $tier) — still running at the deadline" ;;
+    *)   echo "  ✘ $name (Part $part, $tier) — exited $status"
+         tail -8 "$scratch/$name.log" | sed 's/^/      /'
+         failed=$((failed + 1)) ;;
+  esac
+
+  # Nothing from one checkpoint may outlive it into the next.
+  pkill -f "$work" 2>/dev/null || true
+done
+
+echo "  ── $total checkpoint(s): $((total - failed - skipped)) passed, $failed failed, $skipped skipped"
+[ $failed -eq 0 ]

@@ -152,6 +152,14 @@ jobs:
           FLIGHT_TEST_DATABASE_URL: postgres://postgres:flight@postgres:5432/migrationcheck
         run: ./CI/verify-migrate.sh
 
+      # Runs the tutorial's checkpoints rather than only checking that the
+      # names in them resolve. Two dead commands sat in a checkpoint for weeks
+      # because nothing executed them.
+      - name: Tutorial checkpoints run
+        env:
+          FLIGHT_TEST_DATABASE_URL: postgres://postgres:flight@postgres:5432/migrationcheck
+        run: ./CI/verify-checkpoints.sh
+
   format:
     name: Format
     runs-on: ubuntu-latest

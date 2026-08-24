@@ -485,7 +485,7 @@ Two things worth internalising:
 with no case conversion, so a convenience helper emitting `created_at` would
 silently miss `createdAt`. Spell them out.
 
-**Every migration says how to undo itself.** That is what makes `migrate down`
+**Every migration says how to undo itself.** That is what makes `migrate rollback`
 something you run rather than something you fear.
 
 Applied migrations are checksummed. Edit one that has already run and the
