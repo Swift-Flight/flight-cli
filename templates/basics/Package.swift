@@ -5,9 +5,10 @@ import PackageDescription
 // entities, migrations, a repository, and CRUD routes over Postgres.
 //
 // `flight-data` arrives with `traits: ["Postgres"]`. Traits are how a package
-// carries drivers without imposing them: without that trait, PostgresNIO is
-// not merely unused, it is never resolved. Add "Valkey" alongside it when you
-// want the cache and data-source adapters for that too.
+// carries drivers without imposing them — naming Postgres here means the
+// Valkey driver is never resolved. Both of flight-data's traits are on by
+// default, so naming one is subtraction, not opt-in; `traits: []` takes the
+// in-memory cache and the data protocols with no driver at all.
 let package = Package(
     name: "App",
     platforms: [.macOS(.v15)],
@@ -15,7 +16,7 @@ let package = Package(
         .executable(name: "App", targets: ["App"])
     ],
     dependencies: [
-        .package(url: "https://github.com/Swift-Flight/flight.git", from: "0.1.0"),
+        .package(url: "https://github.com/Swift-Flight/flight.git", from: "0.1.0", traits: ["Web"]),
         .package(url: "https://github.com/Swift-Flight/flight-data.git", from: "0.1.0", traits: ["Postgres"]),
     ],
     targets: [

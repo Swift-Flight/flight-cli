@@ -15,7 +15,11 @@ let package = Package(
         .executable(name: "App", targets: ["App"])
     ],
     dependencies: [
-        .package(url: "https://github.com/Swift-Flight/flight.git", from: "0.1.0")
+        // `traits:` names what you want from flight. Both of its optional
+        // traits are on by default, so naming a subset is how you subtract:
+        // "Web" gives HTTP without the authentication stack, and `traits: []`
+        // would give only the container and lifecycle.
+        .package(url: "https://github.com/Swift-Flight/flight.git", from: "0.1.0", traits: ["Web"])
     ],
     targets: [
         .executableTarget(
