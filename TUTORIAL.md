@@ -64,7 +64,8 @@ let package = Package(
         .executable(name: "App", targets: ["App"])
     ],
     dependencies: [
-        .package(url: "https://github.com/Swift-Flight/flight.git", from: "0.1.1")
+        .package(url: "https://github.com/Swift-Flight/flight.git",
+                 from: "0.1.1", traits: ["Web"])
     ],
     targets: [
         .executableTarget(
@@ -84,7 +85,10 @@ let package = Package(
 ```
 
 One package dependency gives you four products. `flight` is a single package
-with many library products, so you take what you use.
+with many library products, so you take what you use — and `traits: ["Web"]`
+says which of its optional layers you want. Nothing you do not name gets
+resolved: the authentication stack and its JWT dependencies are simply absent
+from this project.
 
 **`FlightTransport` deserves a note.** Flight Web owns routing, middleware,
 and the request/response model; it does not own a socket. `FlightTransport`
@@ -318,7 +322,8 @@ Note that `require` does **not** verify certificates; `verify-full` does.
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/Swift-Flight/flight.git", from: "0.1.1"),
+    .package(url: "https://github.com/Swift-Flight/flight.git",
+             from: "0.1.1", traits: ["Web"]),
     .package(url: "https://github.com/Swift-Flight/flight-data.git",
              from: "0.1.1", traits: ["Postgres"]),
 ],
