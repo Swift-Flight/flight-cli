@@ -9,6 +9,8 @@ enum CLIError: Error, CustomStringConvertible {
     case noMigrateExecutable(String)
     case delegateFailed(Int32)
     case manifestUnrecognised(String)
+    case unknownCapability(String, available: [String])
+    case tierRequiresCapability(tier: String, missing: [String])
 
     var description: String {
         switch self {
@@ -34,6 +36,17 @@ enum CLIError: Error, CustomStringConvertible {
                 """
         case .delegateFailed(let code):
             return "migrate exited with status \(code)"
+        case .unknownCapability(let name, let available):
+            return """
+                '\(name)' is not something --with knows about. \
+                Available: \(available.joined(separator: ", ")).
+                """
+        case .tierRequiresCapability(let tier, let missing):
+            return """
+                the '\(tier)' template's own code needs \(missing.joined(separator: " and ")), \
+                so --with must include \(missing.joined(separator: ",")). \
+                Start from 'skeleton' for a project without them.
+                """
         case .manifestUnrecognised(let why):
             return """
                 could not add the migration targets automatically: \(why). \

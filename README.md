@@ -22,6 +22,17 @@ flight new MyService --tier basics    # with a database
 flight new MyService --tier demo      # everything
 ```
 
+The tier chooses the code; `--with` chooses the dependencies:
+
+```bash
+flight new MyService --tier basics --with postgres,valkey
+```
+
+`postgres`, `valkey` and `security` are the options, and each maps to a
+package trait — anything not named is never resolved. The tier's defaults
+cover the usual case, and a combination the tier's own code could not compile
+is refused rather than emitted.
+
 The templates are embedded in the binary, so a generated project is
 byte-for-byte what CI built and tested — with the target renamed to yours.
 

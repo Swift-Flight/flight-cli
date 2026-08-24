@@ -28,6 +28,15 @@ struct New: AsyncParsableCommand {
     @Option(help: "Where to create it. Defaults to ./<name>.")
     var path: String?
 
+    @Option(
+        name: .customLong("with"),
+        help: """
+            Comma-separated capabilities to enable: postgres, valkey, security. \
+            Defaults to what the tier needs — basics and demo get postgres, \
+            demo also gets security. Naming any replaces that default.
+            """)
+    var capabilities: String?
+
     @Flag(help: "Write into the destination even if it already exists.")
     var force: Bool = false
 
@@ -47,10 +56,31 @@ struct New: AsyncParsableCommand {
             throw CLIError.destinationExists(destination.path)
         }
 
+        // What the tier implies, unless --with says otherwise.
+        let requested: Set<Capability>
+        if let capabilities {
+            requested = try Capability.parse(capabilities)
+        } else {
+            switch tier {
+            case "basics": requested = [.postgres]
+            case "demo": requested = [.postgres, .security]
+            default: requested = []
+            }
+        }
+        let missing = Capability.required(byTier: tier).subtracting(requested)
+        if !missing.isEmpty {
+            throw CLIError.tierRequiresCapability(
+                tier: tier, missing: missing.map(\.rawValue).sorted())
+        }
+        let rewriter = TraitRewriter(capabilities: requested)
+
         for (templatePath, templateText) in template.sorted(by: { $0.key < $1.key }) {
             let outPath = project.path(templatePath)
             let outURL = destination.appendingPathComponent(outPath)
-            let text = project.contents(templateText, path: templatePath)
+            var text = project.contents(templateText, path: templatePath)
+            if templatePath == "Package.swift" {
+                text = rewriter.rewrite(text)
+            }
             do {
                 try FileManager.default.createDirectory(
                     at: outURL.deletingLastPathComponent(),
@@ -61,7 +91,10 @@ struct New: AsyncParsableCommand {
             }
         }
 
-        print("Created \(project.value) at \(destination.path) (\(tier))")
+        let enabled = requested.map(\.rawValue).sorted()
+        print(
+            "Created \(project.value) at \(destination.path) (\(tier))"
+                + (enabled.isEmpty ? "" : " with \(enabled.joined(separator: ", "))"))
         print("")
         print("  cd \(destination.lastPathComponent)")
         if tier != "skeleton" {
