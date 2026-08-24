@@ -27,7 +27,12 @@ struct AppModule: FlightModule {
             FlightChannelsModule.self,
             FlightPresenceModule.self,
             FlightCacheModule.self,
-            FlightSecurityModule.self,
+            // FlightSecurityModule is deliberately NOT here. It installs its
+            // generic OIDC validator unless one is already registered, so it
+            // has to configure *after* this module rather than before it —
+            // which is what listing it later in `bootstrap` below achieves.
+            // Declaring it as a dependency would force the opposite order and
+            // fail the container freeze with a duplicate registration.
         ]
     }
 
@@ -46,10 +51,26 @@ struct AppModule: FlightModule {
             Transactor(container: c)
         }
 
-        // The bring-your-own-auth seam. Registering a validator *before*
-        // FlightSecurityModule configures means the module finds one already
-        // present and does not install its OIDC default. A real deployment
-        // deletes this line and configures `security.oidc.*` instead.
+        // The gateway, and the two things that depend on it. All three are
+        // singletons that never capture a request-scoped repository — they
+        // open a scope per call instead. See ChatGateway for why.
+        container.register(ChatGateway.self, scope: .singleton) { c in
+            ChatGateway(container: c)
+        }
+        container.register((any RoomStore).self, scope: .singleton) { c in
+            try c.resolve(ChatGateway.self)
+        }
+        container.register(RoomDigestService.self, scope: .singleton) { c in
+            RoomDigestService(chat: try c.resolve(ChatGateway.self))
+        }
+
+        // The bring-your-own-auth seam. FlightSecurityModule installs its
+        // generic OIDC validator only if none is registered by the time it
+        // configures — so this must run first, which is why that module is
+        // listed after this one in `bootstrap` rather than declared as a
+        // dependency of it.
+        //
+        // A real deployment deletes this and configures `security.oidc.*`.
         container.register((any TokenValidator).self, scope: .singleton) { _ in
             DemoTokenValidator()
         }
@@ -61,7 +82,7 @@ struct AppModule: FlightModule {
             RoomChannel(
                 broadcaster: try c.resolve(ChannelBroadcaster.self),
                 presence: try c.resolve((any Presence).self),
-                chat: try c.resolve(ChatRepository.self),
+                chat: try c.resolve((any RoomStore).self),
                 digests: try c.resolve(RoomDigestService.self))
         }
 
@@ -88,6 +109,9 @@ struct Main {
             modules: [
                 FlightWebModule<FlightTransport>.self,  // choosing a transport = choosing a module
                 AppModule.self,
+                // After AppModule, so it finds the validator registered above
+                // and stands down instead of installing the OIDC default.
+                FlightSecurityModule.self,
                 ActuatorModule.self,
             ]
         )

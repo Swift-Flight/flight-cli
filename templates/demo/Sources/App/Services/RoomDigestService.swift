@@ -19,9 +19,11 @@ import Foundation
 /// The cache is coalescing: if fifty requests miss the same key at once, one
 /// of them computes and the other forty-nine wait for that result instead of
 /// stampeding the database.
-@Service(scope: .singleton)
+/// Registered by hand in `AppModule` rather than scanned, because its
+/// dependency is the gateway rather than a component the container can wire
+/// on its own.
 struct RoomDigestService: DigestInvalidating {
-    @Autowired var chat: ChatRepository
+    let chat: ChatGateway
 
     /// Cached per `minimumMessages` — the argument is part of the key, so
     /// `?min=3` and `?min=10` are different entries rather than one poisoning

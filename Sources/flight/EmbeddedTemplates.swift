@@ -1491,7 +1491,12 @@ struct AppModule: FlightModule {
             FlightChannelsModule.self,
             FlightPresenceModule.self,
             FlightCacheModule.self,
-            FlightSecurityModule.self,
+            // FlightSecurityModule is deliberately NOT here. It installs its
+            // generic OIDC validator unless one is already registered, so it
+            // has to configure *after* this module rather than before it —
+            // which is what listing it later in `bootstrap` below achieves.
+            // Declaring it as a dependency would force the opposite order and
+            // fail the container freeze with a duplicate registration.
         ]
     }
 
@@ -1510,10 +1515,26 @@ struct AppModule: FlightModule {
             Transactor(container: c)
         }
 
-        // The bring-your-own-auth seam. Registering a validator *before*
-        // FlightSecurityModule configures means the module finds one already
-        // present and does not install its OIDC default. A real deployment
-        // deletes this line and configures `security.oidc.*` instead.
+        // The gateway, and the two things that depend on it. All three are
+        // singletons that never capture a request-scoped repository — they
+        // open a scope per call instead. See ChatGateway for why.
+        container.register(ChatGateway.self, scope: .singleton) { c in
+            ChatGateway(container: c)
+        }
+        container.register((any RoomStore).self, scope: .singleton) { c in
+            try c.resolve(ChatGateway.self)
+        }
+        container.register(RoomDigestService.self, scope: .singleton) { c in
+            RoomDigestService(chat: try c.resolve(ChatGateway.self))
+        }
+
+        // The bring-your-own-auth seam. FlightSecurityModule installs its
+        // generic OIDC validator only if none is registered by the time it
+        // configures — so this must run first, which is why that module is
+        // listed after this one in `bootstrap` rather than declared as a
+        // dependency of it.
+        //
+        // A real deployment deletes this and configures `security.oidc.*`.
         container.register((any TokenValidator).self, scope: .singleton) { _ in
             DemoTokenValidator()
         }
@@ -1525,7 +1546,7 @@ struct AppModule: FlightModule {
             RoomChannel(
                 broadcaster: try c.resolve(ChannelBroadcaster.self),
                 presence: try c.resolve((any Presence).self),
-                chat: try c.resolve(ChatRepository.self),
+                chat: try c.resolve((any RoomStore).self),
                 digests: try c.resolve(RoomDigestService.self))
         }
 
@@ -1552,9 +1573,68 @@ struct Main {
             modules: [
                 FlightWebModule<FlightTransport>.self,  // choosing a transport = choosing a module
                 AppModule.self,
+                // After AppModule, so it finds the validator registered above
+                // and stands down instead of installing the OIDC default.
+                FlightSecurityModule.self,
                 ActuatorModule.self,
             ]
         )
+    }
+}
+
+"""#,
+            "Sources/App/Repos/ChatGateway.swift": #"""
+import FlightCore
+import FlightDataPostgres
+import Foundation
+
+/// Bridges long-lived components to request-scoped data access.
+///
+/// `ChatRepository` is `.scoped`: one instance per request, holding one pooled
+/// connection for that request's life. That is the right lifetime for a
+/// repository and the wrong one for anything that outlives a request — a
+/// singleton that captured one would hold a single connection forever, and a
+/// channel that captured one at join time would keep it for the life of a
+/// WebSocket.
+///
+/// So neither captures a repository. They hold this instead, and it opens a
+/// scope per call. The cost is a pooled connection acquired and released
+/// around each operation; the alternative is a connection leak that only shows
+/// up under load.
+///
+/// It satisfies `RoomStore`, so `RoomChannel` is unchanged and its tests still
+/// swap in an in-memory fake.
+struct ChatGateway: RoomStore, Sendable {
+    let container: Container
+
+    private func withRepository<T>(_ body: (ChatRepository) async throws -> T) async throws -> T {
+        try await container.withPostgresScope { scope in
+            try await body(container.resolve(ChatRepository.self, in: scope))
+        }
+    }
+
+    // MARK: RoomStore
+
+    func room(slug: String, messageLimit: Int) async throws -> Room? {
+        try await withRepository { try await $0.room(slug: slug, messageLimit: messageLimit) }
+    }
+
+    func authorIDs(forNames names: [String]) async throws -> [String: UUID] {
+        try await withRepository { try await $0.authorIDs(forNames: names) }
+    }
+
+    func post(_ messages: [ChatMessage]) async throws -> [ChatMessage] {
+        try await withRepository { try await $0.post(messages) }
+    }
+
+    // MARK: Aggregates, for the cached digests
+
+    func activity(minimumMessages: Int) async throws -> [RoomActivity] {
+        try await withRepository { try await $0.activity(minimumMessages: minimumMessages) }
+    }
+
+    func headlines() async throws -> [RoomHeadline] {
+        try await withRepository { try await $0.headlines() }
     }
 }
 
@@ -2148,9 +2228,11 @@ import Foundation
 /// The cache is coalescing: if fifty requests miss the same key at once, one
 /// of them computes and the other forty-nine wait for that result instead of
 /// stampeding the database.
-@Service(scope: .singleton)
+/// Registered by hand in `AppModule` rather than scanned, because its
+/// dependency is the gateway rather than a component the container can wire
+/// on its own.
 struct RoomDigestService: DigestInvalidating {
-    @Autowired var chat: ChatRepository
+    let chat: ChatGateway
 
     /// Cached per `minimumMessages` — the argument is part of the key, so
     /// `?min=3` and `?min=10` are different entries rather than one poisoning
@@ -2423,6 +2505,68 @@ import Migrations
 struct Migrate: MigrateTool {
     static var migrations: [MigrationEntry] { _allMigrations() }
 }
+"""#,
+            "Tests/AppTests/BootstrapTests.swift": #"""
+import FlightActuator
+import FlightCore
+import FlightSecurityCore
+import FlightTransport
+import FlightWeb
+import FlightWebTesting
+import Testing
+
+@testable import App
+
+/// Does the application actually start?
+///
+/// Every other suite here tests a layer. This one tests the wiring: the same
+/// modules `main` boots, in the same order, frozen the same way. It exists
+/// because nothing did, and a lifetime mistake — a singleton capturing a
+/// request-scoped repository — sat undetected in `AppModule` while a hundred
+/// green tests ran around it. Freezing the container is where such a mistake
+/// surfaces, and freezing is exactly what a test of a single layer skips.
+@Suite("The application boots")
+struct BootstrapTests {
+
+    /// Everything `main` passes to `Flight.bootstrap`, minus the transport —
+    /// binding a socket is not what is under test here.
+    private func boot() throws -> Container {
+        try TestContainer.build(
+            configuration: Configuration(values: [
+                "app.name": "App",
+                "datasource.primary.url": "postgres://localhost/unused",
+            ])
+        ) {
+            AppModule()
+            FlightSecurityModule()
+            ActuatorModule()
+        }
+    }
+
+    @Test("the container freezes")
+    func freezes() throws {
+        #expect(throws: Never.self) { try boot() }
+    }
+
+    @Test("the demo's own token validator is the one installed")
+    func bringYourOwnAuth() throws {
+        // FlightSecurityModule installs a generic OIDC validator unless one is
+        // already registered. If the module ordering regressed, this resolves
+        // the OIDC one — and would have demanded `security.oidc.issuer` above.
+        let validator = try boot().resolve((any TokenValidator).self)
+        #expect(validator is DemoTokenValidator)
+    }
+
+    @Test("nothing long-lived captured a request-scoped repository")
+    func lifetimes() throws {
+        // The gateway is the seam that keeps this true: singletons and
+        // channels hold it, and it opens a scope per call.
+        let container = try boot()
+        #expect(throws: Never.self) { try container.resolve(RoomDigestService.self) }
+        #expect(throws: Never.self) { try container.resolve((any RoomStore).self) }
+    }
+}
+
 """#,
             "Tests/AppTests/DemoTokenValidatorTests.swift": #"""
 import FlightSecurityCore
