@@ -100,3 +100,7 @@ themselves are never modified.
 CI runs both scripts, and `flight` and `flight-data` call this workflow, so a
 breaking change there fails on the pull request that caused it rather than in
 someone's first ten minutes with a downloaded project.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
