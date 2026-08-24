@@ -42,10 +42,12 @@ jobs:
             echo "::error::flight-data, which are private."
             exit 1
           fi
+          git config --global url."https://x-access-token:${{ secrets.SWIFTFLIGHT_CI_TOKEN }}@github.com/".insteadOf "https://github.com/"
+          git config --global --add safe.directory '*'
 
       - uses: actions/checkout@v4
         with:
-          path: flight-start
+          path: flight-cli
 
       - uses: actions/checkout@v4
         with:
@@ -76,7 +78,7 @@ jobs:
       # to verify them at all; after it, it is what catches a break before
       # the release rather than after.
       - name: Verify template
-        working-directory: flight-start
+        working-directory: flight-cli
         run: ./CI/verify-templates.sh ${{ matrix.tier }}
 
   tutorial:
