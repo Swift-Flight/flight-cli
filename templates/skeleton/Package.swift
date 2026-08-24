@@ -1,0 +1,49 @@
+// swift-tools-version: 6.2
+import PackageDescription
+
+// A Flight application, at its smallest: configuration, dependency injection,
+// an HTTP server, and the operational endpoints. Nothing else — no database,
+// no real-time layer, no cache.
+//
+// Two package dependencies carry all of it. `flight` is the framework and the
+// layers above it; `flight-data` is persistence and caching, and is absent
+// here because this tier does not persist anything yet.
+let package = Package(
+    name: "App",
+    platforms: [.macOS(.v15)],
+    products: [
+        .executable(name: "App", targets: ["App"])
+    ],
+    dependencies: [
+        .package(url: "https://github.com/Swift-Flight/flight.git", from: "0.1.0")
+    ],
+    targets: [
+        .executableTarget(
+            name: "App",
+            dependencies: [
+                .product(name: "FlightCore", package: "flight"),
+                .product(name: "FlightWeb", package: "flight"),
+                // Choosing a transport is choosing a module. This one wraps
+                // HummingbirdCore; any conforming transport is a peer.
+                .product(name: "FlightTransport", package: "flight"),
+                .product(name: "FlightActuator", package: "flight"),
+            ],
+            // Scans this target for @Component/@Controller/@Service and
+            // generates `flightRegisterAll` at build time. It also checks
+            // every @ConfigValue key without a default against flight.yaml,
+            // so a missing key is a compile error rather than a 3am page.
+            plugins: [
+                .plugin(name: "FlightRegistrationPlugin", package: "flight")
+            ]
+        ),
+        .testTarget(
+            name: "AppTests",
+            dependencies: [
+                "App",
+                .product(name: "FlightCore", package: "flight"),
+                .product(name: "FlightWeb", package: "flight"),
+                .product(name: "FlightWebTesting", package: "flight"),
+            ]
+        ),
+    ]
+)

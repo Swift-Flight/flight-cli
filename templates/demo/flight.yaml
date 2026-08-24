@@ -1,0 +1,44 @@
+app:
+  name: App
+
+server:
+  host: 127.0.0.1
+  port: 8080
+
+datasource:
+  primary:
+    url: "postgres://postgres:flight@127.0.0.1:55432/flight_demo?sslmode=disable"
+    pool_size: 5
+
+actuator:
+  format: ssr
+
+# Channels: the per-socket outbound queue. When it fills, the OLDEST messages
+# are dropped — a client behind on a realtime feed wants current state, not a
+# backlog it can never catch up on. Drops are counted per socket and logged.
+# Note the `flight.` prefix here, absent from `server`/`datasource`/`actuator`
+# above: Channels and Presence namespace their keys, the older packages do not.
+# That inconsistency is real and predates this demo.
+flight:
+  channels:
+    outbound-buffer-size: 256
+    heartbeat-timeout-seconds: 60
+
+# Presence. This demo runs one node, so it starts in single-node mode and
+# these only take effect once a distributed PubSub adapter is present. They
+# are here so the knobs are visible rather than folklore.
+  presence:
+    heartbeat-interval-seconds: 5
+    down-after-seconds: 15
+    permdown-after-seconds: 300
+
+# No `security.oidc.*` block: this demo registers its own TokenValidator
+# (see DemoTokenValidator.swift) so it runs with no identity provider. A real
+# deployment deletes that file and configures the issuer and audience here,
+# which is all the generic OIDC validator needs:
+#
+# security:
+#   oidc:
+#     issuer: https://your-tenant.example.com/
+#     audience: flight-demo
+#     roles_claim: realm_access.roles
