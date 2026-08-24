@@ -226,8 +226,11 @@ kill %1
 ## Stage 1.5 — A test
 
 Create `Sources/App/Entities/`, `Sources/App/Repos/`, and
-`Sources/App/Services/` now — empty, but Part 2 fills them, and the layout is
-worth having from the start.
+`Sources/App/Services/` now. Part 2 fills the first two. `Services/` stays
+empty until Part 3, and that is deliberate — see
+[Where the service layer goes](#where-the-service-layer-goes) at the end of
+Part 2 for why a CRUD controller talking straight to a repository is the right
+shape until it is not.
 
 Add the test target to `Package.swift`:
 
@@ -368,6 +371,53 @@ it**. Migrations are something you run, not something your server does while
 booting. A server that migrates on startup is a server that races itself when
 you run two of them.
 
+## Stage 2.2b — The same thing, with the CLI
+
+Stage 2.2 added the two migration targets by hand, because it is worth seeing
+what they are once. From here on the CLI does it:
+
+```bash
+flight migrate init
+```
+
+In a project with no migration targets it writes `Sources/migrate/Migrate.swift`,
+creates `Sources/Migrations/` with a placeholder so the target has a module to
+build, and inserts both targets plus the `flight-data` dependency into
+`Package.swift`. In a project that already has them it says so and changes
+nothing.
+
+Every other migration command is the same tool you already have, reached
+through `flight` instead of `swift run`:
+
+| | |
+| --- | --- |
+| `flight migrate` | apply everything pending |
+| `flight migrate status` | what is applied, what is not |
+| `flight migrate status --json` | the same, machine-readable |
+| `flight migrate create AddPosts` | write a new timestamped migration |
+| `flight migrate rollback` | revert the last one |
+| `flight migrate rollback --steps 3` | revert the last three |
+| `flight migrate rollback --to 20260101000000` | revert down to a version |
+| `flight migrate repair` | re-checksum a migration you edited |
+| `flight migrate --dry-run` | print the SQL without running it |
+| `flight migrate --help` | every option |
+
+Arguments are passed straight through, so anything the underlying tool accepts
+works here.
+
+**Why it builds your project first.** Migrations are Swift types in your
+package, found at build time. A globally installed binary cannot know what
+`CreateUsers.up(_:)` does, so `flight migrate` builds and runs your project's
+own migrate executable. The first run of a session pays for a build; the rest
+are instant.
+
+The connection URL comes from `--database-url`, then `$FLIGHT_DATABASE_URL`,
+then `$DATABASE_URL` — never from `flight.yaml`, so a migration tool is always
+explicit about which database it is about to alter.
+
+This tutorial keeps using `swift run migrate` so it works with or without the
+CLI installed. They are the same commands.
+
 ## Stage 2.3 — An entity
 
 `Sources/App/Entities/User.swift`:
@@ -446,12 +496,16 @@ disagree.
 
 ```bash
 export FLIGHT_DATABASE_URL=postgres://postgres:flight@127.0.0.1:55432/app_dev
-swift run migrate status     # one pending
-swift run migrate up         # applies it
-swift run migrate status     # one applied
-swift run migrate down       # rolls it back
-swift run migrate up
+swift run migrate status       # one pending
+swift run migrate              # applies it — `apply` is the default subcommand
+swift run migrate status       # one applied
+swift run migrate rollback     # reverts it
+swift run migrate              # and forward again
 ```
+
+The subcommands are `apply` (the default, so bare `migrate` applies),
+`status`, `rollback`, `create`, and `repair`. `migrate --help` lists every
+option.
 
 The CLI reads `FLIGHT_DATABASE_URL`, not `flight.yaml` — a migration tool
 should be explicit about which database it is about to alter.
@@ -670,6 +724,44 @@ The complete suite is in
 swift test        # 8 tests pass, no database required
 ```
 
+## Where the service layer goes
+
+`Sources/App/Services/` is still empty, and `UserController` resolves the
+repository directly. That is on purpose.
+
+A service exists to hold behaviour that belongs to neither neighbour — a
+controller should only translate HTTP, and a repository should only know SQL.
+Everything this application does so far is one query per request, so a service
+here would be a class of forwarding methods:
+
+```swift
+// What a service would look like at this point. Don't write this.
+func all() async throws -> [User] { try await repository.all() }
+```
+
+That layer costs a file, an indirection, and a registration, and buys nothing.
+Add it when there is something to put in it — which Part 3 reaches almost
+immediately:
+
+```swift
+@Service(scope: .scoped)
+struct UserService {
+    @Autowired var repository: (any UserRepositoryProtocol)
+
+    @Transactional
+    func signup(name: String, email: String) async throws -> User {
+        // Validate, announce the signup, and create the user — one unit of
+        // work that either wholly happens or wholly does not.
+    }
+}
+```
+
+Validation, a transaction spanning two writes, and a rule about what signing
+up *means* — none of that is HTTP and none of it is SQL. That is a service.
+
+The empty directory is a signal, not an oversight: it is where behaviour goes
+when you have some.
+
 **You have now built [`templates/basics`](templates/basics).**
 
 ---
@@ -697,7 +789,7 @@ Part 3 is longer than the first two together, so it is split by concern.
 The demo's schema adds rooms, messages, topics, and a join table. The
 migrations are in
 [`templates/demo/Sources/Migrations`](templates/demo/Sources/Migrations) — copy
-them and run `swift run migrate up`.
+them into `Sources/Migrations/` and apply them with `swift run migrate`.
 
 The shapes worth noticing, because Part 3 leans on all of them:
 

@@ -11,6 +11,7 @@
 #
 set -euo pipefail
 cd "$(dirname "$0")/.."
+here="$(pwd)"
 
 if [ -z "${FLIGHT_TEST_DATABASE_URL:-}" ]; then
   echo "::warning::FLIGHT_TEST_DATABASE_URL is not set — skipping the migrate check"
@@ -64,5 +65,32 @@ echo "── flight migrate rollback"
 "$cli" migrate rollback >/dev/null
 "$cli" migrate status 2>/dev/null | grep -q "No applied migrations" || {
   echo "::error::rollback did not revert the migration"; exit 1; }
+
+
+echo "── every migrate subcommand the tutorial names really exists"
+# This is the check that was missing: TUTORIAL.md told readers to run
+# `migrate up` and `migrate down`, neither of which is a subcommand. Paths and
+# symbols were verified; the commands were not, so two wrong ones shipped.
+#
+# The real binary is the source of truth — its help output, not a list kept
+# here that could drift from it.
+help_text="$("$cli" migrate --help 2>&1 || true)"
+real=$(cd "$scratch/p" && swift run migrate --help 2>/dev/null \
+       | sed -n '/SUBCOMMANDS:/,$p' | awk 'NR>1 && $1 ~ /^[a-z]+$/ {print $1}')
+[ -z "$real" ] && { echo "::error::could not read the migrate subcommand list"; exit 1; }
+
+used=$(grep -oE '(flight|swift run) migrate [a-z]+' "$here/TUTORIAL.md" \
+       | awk '{print $NF}' | sort -u)
+bad=0
+for cmd in $used; do
+  # `init` is the CLI's own, handled before delegation.
+  [ "$cmd" = "init" ] && continue
+  if ! echo "$real" | grep -qx "$cmd"; then
+    echo "::error::TUTORIAL.md tells readers to run 'migrate $cmd', which is not a subcommand"
+    bad=1
+  fi
+done
+[ $bad -eq 0 ] && echo "  ✔ $(echo "$used" | wc -w) subcommand(s) named in the tutorial all exist"
+[ $bad -eq 1 ] && exit 1
 
 echo "✔ create, init, apply, status and rollback all work through the CLI"
