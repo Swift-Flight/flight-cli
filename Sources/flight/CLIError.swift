@@ -5,6 +5,10 @@ enum CLIError: Error, CustomStringConvertible {
     case unknownTier(String, available: [String])
     case destinationExists(String)
     case writeFailed(String, underlying: any Error)
+    case notAPackage(String)
+    case noMigrateExecutable(String)
+    case delegateFailed(Int32)
+    case manifestUnrecognised(String)
 
     var description: String {
         switch self {
@@ -16,6 +20,25 @@ enum CLIError: Error, CustomStringConvertible {
             return "\(path) already exists. Choose another name, or pass --force to write into it."
         case .writeFailed(let path, let underlying):
             return "could not write \(path): \(underlying)"
+        case .notAPackage(let path):
+            return """
+                no Package.swift found in \(path) or any parent directory. \
+                Run this from inside a Flight project.
+                """
+        case .noMigrateExecutable(let path):
+            return """
+                \(path) has no 'migrate' executable target, so there is nothing \
+                to run migrations with. Add one with:
+
+                    flight migrate init
+                """
+        case .delegateFailed(let code):
+            return "migrate exited with status \(code)"
+        case .manifestUnrecognised(let why):
+            return """
+                could not add the migration targets automatically: \(why). \
+                Add them by hand — see the basics template's Package.swift.
+                """
         }
     }
 }

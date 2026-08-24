@@ -6,6 +6,6 @@ struct Flight: AsyncParsableCommand {
         commandName: "flight",
         abstract: "Scaffolding and tooling for Flight applications.",
         version: "0.1.0",
-        subcommands: [New.self]
+        subcommands: [New.self, Migrate.self]
     )
 }

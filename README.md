@@ -25,6 +25,33 @@ flight new MyService --tier demo      # everything
 The templates are embedded in the binary, so a generated project is
 byte-for-byte what CI built and tested — with the target renamed to yours.
 
+## Run migrations
+
+```bash
+flight migrate                    # apply everything pending
+flight migrate status             # what is applied, what is not
+flight migrate create AddPosts    # write a new timestamped migration
+flight migrate rollback           # revert the last one
+flight migrate --dry-run          # print the SQL without running it
+flight migrate --help             # the full option list
+```
+
+Every argument is passed through to the project's migrate executable, so the
+whole command set is available and stays available — a flag added there works
+here with nothing to keep in sync.
+
+Migrations are Swift types in your package, discovered at build time, so
+running them means building your project. A globally installed binary cannot
+know what `CreateUsers.up(_:)` does; this builds and runs the project's own
+tool for you.
+
+A project without migration targets — anything started from `skeleton` — gets
+them with:
+
+```bash
+flight migrate init
+```
+
 ## Pick a starting point
 
 | Template | For | Includes |
