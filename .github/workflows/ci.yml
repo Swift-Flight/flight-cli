@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   templates:
-    name: ${{ matrix.tier }} (Swift 6.2.3)
+    name: ${{ matrix.tier }} (Swift 6.3.3)
     runs-on: ubuntu-latest
     container: swift:6.3.3
     strategy:
@@ -26,6 +26,11 @@ jobs:
         tier: [skeleton, basics, demo]
 
     steps:
+      # The official Swift images are slim and carry no Python; the
+      # verification scripts in CI/ need it.
+      - name: Install python3
+        run: apt-get update -qq && apt-get install -y -qq python3
+
       - name: Check the sibling-repository token is present
         run: |
           if [ -z "${{ secrets.SWIFTFLIGHT_CI_TOKEN }}" ]; then
@@ -76,6 +81,11 @@ jobs:
     runs-on: ubuntu-latest
     container: swift:6.3.3
     steps:
+      # The official Swift images are slim and carry no Python; the
+      # verification scripts in CI/ need it.
+      - name: Install python3
+        run: apt-get update -qq && apt-get install -y -qq python3
+
       - uses: actions/checkout@v4
 
       # Cheap, and it catches the failure that actually happened last time:
@@ -97,6 +107,11 @@ jobs:
           --health-cmd pg_isready --health-interval 10s
           --health-timeout 5s --health-retries 5
     steps:
+      # The official Swift images are slim and carry no Python; the
+      # verification scripts in CI/ need it.
+      - name: Install python3
+        run: apt-get update -qq && apt-get install -y -qq python3
+
       - uses: actions/checkout@v4
 
       # The generated projects resolve flight and flight-data by URL, and
