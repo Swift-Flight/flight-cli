@@ -51,6 +51,10 @@ is an error rather than a silently new connection — which is what makes
 
 ## Stage 1.1 — A package
 
+If you have the CLI, `flight new MyService` writes everything in this part for
+you and you can skip to Stage 1.5's checkpoint. Doing it by hand once is worth
+it — the rest of the tutorial assumes you know what each piece is for.
+
 Create a directory and a `Package.swift`:
 
 ```swift

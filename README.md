@@ -1,7 +1,29 @@
-# Flight Start
+# Flight CLI
 
-Starter projects for [Flight](https://github.com/Swift-Flight/flight), and the
-tutorial that builds them.
+The `flight` command, the starter templates it emits, and the tutorial that
+builds them.
+
+## Install
+
+```bash
+git clone https://github.com/Swift-Flight/flight-cli.git
+cd flight-cli
+swift build -c release
+cp .build/release/flight ~/.local/bin/
+```
+
+Requires Swift 6.3 or later.
+
+## Create a project
+
+```bash
+flight new MyService                  # skeleton
+flight new MyService --tier basics    # with a database
+flight new MyService --tier demo      # everything
+```
+
+The templates are embedded in the binary, so a generated project is
+byte-for-byte what CI built and tested — with the target renamed to yours.
 
 ## Pick a starting point
 
@@ -11,8 +33,8 @@ tutorial that builds them.
 | [`basics`](templates/basics) | A service with a database | + entities, migrations, a repository, CRUD |
 | [`demo`](templates/demo) | Reading, not starting from | + PubSub, Channels, Presence, caching, auth, the full query tour |
 
-Copy a directory, rename the package, and build. Each one is a working
-project with passing tests.
+`flight new` emits one of these with your project's name substituted. You can
+also copy a directory by hand — each is a working project with passing tests.
 
 ## Or follow the tutorial
 
@@ -30,10 +52,17 @@ prose that slowly stops matching the code.
 ## Verifying
 
 ```bash
-./CI/verify-templates.sh          # build and test all three tiers
-./CI/verify-templates.sh basics   # or just one
-./CI/verify-tutorial.sh           # check the tutorial still describes them
+./CI/verify-templates.sh            # build and test all three tiers
+./CI/verify-templates.sh basics     # or just one
+./CI/verify-tutorial.sh             # check the tutorial still describes them
+./CI/verify-generated-projects.sh   # build and test what `flight new` emits
+./CI/generate-embedded-templates.sh # re-embed after changing templates/
 ```
+
+`flight new`'s output is verified separately from the templates because it is
+a different artifact: the CLI renames the target and rewrites manifest
+strings, imports, and paths, and any of that can be wrong in a way the
+templates themselves would never reveal.
 
 Templates ship URL dependencies, because that is what a downloaded project
 must contain. `verify-templates.sh` copies each tier to a scratch directory
