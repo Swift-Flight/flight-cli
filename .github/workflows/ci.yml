@@ -146,3 +146,16 @@ jobs:
         env:
           FLIGHT_TEST_DATABASE_URL: postgres://postgres:flight@postgres:5432/migrationcheck
         run: ./CI/verify-migrate.sh
+
+  format:
+    name: Format
+    runs-on: ubuntu-latest
+    container: swift:6.3.3
+    steps:
+      - uses: actions/checkout@v4
+
+      # Blocking, not advisory: this repository is clean, and the way to keep
+      # it that way is to fail on the first violation rather than accumulate a
+      # backlog nobody reads.
+      - name: Check formatting
+        run: swift format lint --recursive --strict Sources Tests

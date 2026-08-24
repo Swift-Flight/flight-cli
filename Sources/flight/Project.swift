@@ -28,7 +28,8 @@ struct Project {
     }
 
     var manifest: String {
-        (try? String(contentsOf: root.appendingPathComponent("Package.swift"), encoding: .utf8)) ?? ""
+        (try? String(contentsOf: root.appendingPathComponent("Package.swift"), encoding: .utf8))
+            ?? ""
     }
 
     /// Whether this package builds the migrate executable. Checked before
