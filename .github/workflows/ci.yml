@@ -19,7 +19,7 @@ jobs:
   templates:
     name: ${{ matrix.tier }} (Swift 6.2.3)
     runs-on: ubuntu-latest
-    container: swift:6.2.3
+    container: swift:6.3.3
     strategy:
       fail-fast: false
       matrix:
@@ -74,7 +74,7 @@ jobs:
   tutorial:
     name: Tutorial matches the templates
     runs-on: ubuntu-latest
-    container: swift:6.2.3
+    container: swift:6.3.3
     steps:
       - uses: actions/checkout@v4
 

@@ -21,7 +21,7 @@ template is right and the tutorial has a bug.
 
 ## What you need
 
-- Swift 6.2 or later (`swift --version`)
+- Swift 6.3 or later (`swift --version`)
 - Docker, from Part 2 onward, for Postgres
 - No prior Flight knowledge; some Swift concurrency will help in Part 3
 
@@ -64,7 +64,7 @@ let package = Package(
         .executable(name: "App", targets: ["App"])
     ],
     dependencies: [
-        .package(url: "https://github.com/Swift-Flight/flight.git", from: "0.1.0")
+        .package(url: "https://github.com/Swift-Flight/flight.git", from: "0.1.1")
     ],
     targets: [
         .executableTarget(
@@ -318,9 +318,9 @@ Note that `require` does **not** verify certificates; `verify-full` does.
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/Swift-Flight/flight.git", from: "0.1.0"),
+    .package(url: "https://github.com/Swift-Flight/flight.git", from: "0.1.1"),
     .package(url: "https://github.com/Swift-Flight/flight-data.git",
-             from: "0.1.0", traits: ["Postgres"]),
+             from: "0.1.1", traits: ["Postgres"]),
 ],
 ```
 
@@ -330,6 +330,11 @@ protocols. Without the `Postgres` trait, PostgresNIO is not merely unused —
 it is never resolved, never fetched, and never appears in your
 `Package.resolved`. Add `"Valkey"` alongside it when you want that adapter
 too.
+
+Traits are opt-in throughout: this project resolves 34 packages, and neither
+`valkey-swift` nor `jwt-kit` is among them, because nothing asked for them.
+That is also why Flight requires Swift 6.3 — SwiftPM 6.2 could not resolve an
+opt-in trait through a versioned dependency.
 
 Add `FlightDataPostgres` to the `App` target's dependencies, and two new
 targets:

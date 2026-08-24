@@ -1,4 +1,4 @@
-// swift-tools-version: 6.2
+// swift-tools-version: 6.3
 import PackageDescription
 
 // A Flight application, at its smallest: configuration, dependency injection,
@@ -15,11 +15,11 @@ let package = Package(
         .executable(name: "App", targets: ["App"])
     ],
     dependencies: [
-        // `traits:` names what you want from flight. Both of its optional
-        // traits are on by default, so naming a subset is how you subtract:
-        // "Web" gives HTTP without the authentication stack, and `traits: []`
-        // would give only the container and lifecycle.
-        .package(url: "https://github.com/Swift-Flight/flight.git", from: "0.1.0", traits: ["Web"])
+        // `traits:` names what you want from flight, and nothing else is
+        // resolved. "Web" is HTTP, WebSockets, Channels and Presence; add
+        // "Security" for authentication. Naming neither gives you just the
+        // container and lifecycle.
+        .package(url: "https://github.com/Swift-Flight/flight.git", from: "0.1.1", traits: ["Web"])
     ],
     targets: [
         .executableTarget(
