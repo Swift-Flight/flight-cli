@@ -881,7 +881,7 @@ whole data structure exists to keep, which is why the demo's
 
 Clients get one `flight:presence_state` on join, then `flight:presence_diff`s.
 Both reference clients maintain the list for you: `FlightPresenceClient` in
-Swift, `@flight/channels/presence` in JavaScript.
+Swift, `@swift-flight/channels/presence` in JavaScript.
 
 ## Stage 3.6 — Caching the expensive reads
 
