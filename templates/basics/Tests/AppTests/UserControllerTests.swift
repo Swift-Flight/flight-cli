@@ -2,121 +2,104 @@ import FlightCore
 import FlightWeb
 import FlightWebTesting
 import Foundation
-import Synchronization
 import Testing
 
 @testable import App
 
-/// An in-memory repository, so this suite exercises the real controller, the
-/// real routing, the real dependency injection, and the real JSON encoding
-/// with no database in the loop.
-private final class InMemoryUsers: UserRepositoryProtocol, Sendable {
-    private let users = Mutex<[User]>([])
+/// The controller, its routes, and its status codes — with a fake repository
+/// underneath and no database anywhere.
+///
+/// `Components` registers exactly the components under test, the same way the
+/// application registers them; the fake is registered under the protocol the
+/// controller depends on. Routing, middleware, dependency injection, request
+/// decoding, and JSON encoding all run for real. `TestClient` dispatches in
+/// process, so there is no socket and no port to collide with — the tests are
+/// fast because the network is absent, not because the framework is stubbed.
+@Suite("User routes")
+struct UserControllerTests {
 
-    init(_ seed: [User] = []) { users.withLock { $0 = seed } }
-
-    func all() async throws -> [User] { users.withLock { $0 } }
-
-    func find(byID id: UUID) async throws -> User? {
-        users.withLock { $0.first { $0.id == id } }
+    private func client(_ users: InMemoryUsers = InMemoryUsers([ada])) throws -> TestClient {
+        let container = try TestContainer.build {
+            Components(UserController.self)
+            Fake(users)
+        }
+        return try TestClient(container: container)
     }
 
-    func find(byEmail email: String) async throws -> User? {
-        users.withLock { $0.first { $0.email == email } }
+    @Test("listing returns the rows the repository holds")
+    func list() async throws {
+        let response = await (try client()).get("/users")
+        #expect(response.status == .ok)
+        #expect(try response.decodeJSON([UserPayload].self).map(\.name) == ["Ada"])
     }
 
-    func create(name: String, email: String) async throws -> User {
-        let user = User(
-            id: UUID(), name: name, email: email, createdAt: Date(), updatedAt: Date())
-        users.withLock { $0.append(user) }
-        return user
+    @Test("fetching by id returns that user")
+    func getByID() async throws {
+        let response = await (try client()).get("/users/\(ada.id)")
+        #expect(response.status == .ok)
+        #expect(try response.decodeJSON(UserPayload.self).email == ada.email)
+    }
+
+    @Test("an id that is not a UUID is a 400, not a 500")
+    func malformedID() async throws {
+        #expect(await (try client()).get("/users/not-a-uuid").status == .badRequest)
+    }
+
+    @Test("an unknown id is a 404")
+    func unknownID() async throws {
+        #expect(await (try client()).get("/users/\(UUID())").status == .notFound)
+    }
+
+    @Test("creating a user returns 201, and the row is really stored")
+    func create() async throws {
+        let users = InMemoryUsers()
+        let response = try await client(users).post(
+            "/users", json: CreateUserRequest(name: "Grace", email: "grace@example.com"))
+
+        #expect(response.status == .created)
+        #expect(try response.decodeJSON(UserPayload.self).name == "Grace")
+        // Asserting on the effect, not just the response: the fake is a real
+        // object a test can interrogate afterwards.
+        #expect(users.stored.map(\.email) == ["grace@example.com"])
+    }
+
+    @Test("an invalid email is refused before any SQL would run")
+    func invalidEmail() async throws {
+        let users = InMemoryUsers()
+        let response = try await client(users).post(
+            "/users", json: CreateUserRequest(name: "Nope", email: "not-an-email"))
+
+        #expect(response.status == .badRequest)
+        #expect(users.stored.isEmpty, "validation must run before the write")
+    }
+
+    @Test("a duplicate email is a conflict, not a second row")
+    func duplicateEmail() async throws {
+        let users = InMemoryUsers([ada])
+        let response = try await client(users).post(
+            "/users", json: CreateUserRequest(name: "Ada Again", email: ada.email))
+
+        #expect(response.status == .conflict)
+        #expect(users.stored.count == 1)
     }
 }
 
-/// Only the bottommost seam is swapped. The controller is registered through
-/// its ordinary macro-generated thunk, exactly as `flightRegisterAll` would
-/// register it in production.
-private struct TestModule: FlightModule {
-    static let ada = User(
-        id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
-        name: "Ada", email: "ada@example.com", createdAt: Date(), updatedAt: Date())
-
+/// Registers the fake under the protocol the controller depends on.
+private struct Fake: FlightModule {
     let users: InMemoryUsers
-
-    init() { self.users = InMemoryUsers([Self.ada]) }
+    init() { self.users = InMemoryUsers() }
+    init(_ users: InMemoryUsers) { self.users = users }
 
     func configure(_ container: Container) throws {
-        try UserController._flightRegister(container)
         let users = self.users
         container.register((any UserRepositoryProtocol).self, scope: .scoped) { _ in users }
     }
 }
 
-@Suite("User routes — repository faked, everything above it real")
-struct UserControllerTests {
-
-    private func client() throws -> TestClient {
-        try TestClient(container: TestContainer.build { TestModule() })
-    }
-
-    @Test("listing returns the seeded user")
-    func list() async throws {
-        let client = try client()
-        let response = await client.get("/users")
-        #expect(response.status == .ok)
-        #expect(try response.decodeJSON([UserPayload].self).count == 1)
-    }
-
-    @Test("fetching by id returns that user")
-    func getByID() async throws {
-        let client = try client()
-        let response = await client.get("/users/\(TestModule.ada.id)")
-        #expect(response.status == .ok)
-        #expect(try response.decodeJSON(UserPayload.self).email == "ada@example.com")
-    }
-
-    @Test("an id that is not a UUID is a 400, not a 500")
-    func malformedID() async throws {
-        let client = try client()
-        #expect(await client.get("/users/not-a-uuid").status == .badRequest)
-    }
-
-    @Test("an unknown id is a 404")
-    func unknownID() async throws {
-        let client = try client()
-        #expect(await client.get("/users/\(UUID())").status == .notFound)
-    }
-
-    @Test("creating a user returns 201 and the new row")
-    func create() async throws {
-        let client = try client()
-        let response = try await client.post(
-            "/users", json: CreateUserRequest(name: "Grace", email: "grace@example.com"))
-        #expect(response.status == .created)
-        #expect(try response.decodeJSON(UserPayload.self).name == "Grace")
-    }
-
-    @Test("an invalid email is refused before any SQL would run")
-    func invalidEmail() async throws {
-        let client = try client()
-        let response = try await client.post(
-            "/users", json: CreateUserRequest(name: "Nope", email: "not-an-email"))
-        #expect(response.status == .badRequest)
-    }
-
-    @Test("a duplicate email is a conflict, not a second row")
-    func duplicateEmail() async throws {
-        let client = try client()
-        let response = try await client.post(
-            "/users", json: CreateUserRequest(name: "Ada Again", email: "ada@example.com"))
-        #expect(response.status == .conflict)
-    }
-}
-
 /// Entities are `Encodable` but deliberately not `Decodable`: once an
-/// association has crossed the wire as `null`, "not preloaded" and "preloaded
-/// and empty" are indistinguishable, and the type refuses to guess. Models go
-/// out as JSON; what comes back in is a type of its own.
+/// association has crossed the wire as `null`, "not loaded" and "loaded and
+/// empty" are indistinguishable, and the type refuses to guess. Models go out
+/// as JSON; what comes back in is a type of its own.
 private struct UserPayload: Decodable {
     let id: UUID
     let name: String

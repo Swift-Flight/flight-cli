@@ -1,24 +1,21 @@
 import FlightCore
+import FlightWebTesting
 import Foundation
 import Testing
 @testable import App
 
-/// UserService against a MOCKED repository — through a real (if minimal)
-/// Container, because UserService is `@Service` again: its only initializer
-/// is the macro-generated `init(_flight:)`, so it's constructed by
-/// resolving it, exactly as production does. Only the repository is fake.
+/// UserService with a fake repository underneath it.
+///
+/// The service is registered and resolved exactly as the application does it,
+/// so its own wiring — scope, stereotype, injected properties — is under test
+/// rather than bypassed. Only the repository is replaced.
 @Suite("UserService — repository mocked")
 struct UserServiceTests {
-    /// UserService on its ordinary @Service path; the mocked repository
-    /// bound under the same existential key `AppModule` binds the real one
-    /// under (see Main.swift). Everything about UserService's own wiring —
-    /// registration, scope, stereotype — is untouched.
     private func makeContainer(repository: MockUserRepository) throws -> Container {
-        let container = Container()
-        container.register((any UserRepositoryProtocol).self, scope: .scoped) { _ in repository }
-        try UserService._flightRegister(container)
-        try container.freeze()
-        return container
+        try TestContainer.build {
+            Components(UserService.self)
+            FakeRepository(repository)
+        }
     }
 
     @Test("find(byID:) returns the matching user from the mocked repository")

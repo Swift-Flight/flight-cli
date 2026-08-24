@@ -591,28 +591,78 @@ kill %1
 
 ## Stage 2.7 — Testing without a database
 
-Because the controller depends on `(any UserRepositoryProtocol)`, a test can
-register a fake under that key and exercise everything above it for real. The
-complete suite is in
-[`templates/basics`](templates/basics/Tests/AppTests/UserControllerTests.swift);
-the shape is:
+This is what the dependency injection was for.
+
+The controller depends on `(any UserRepositoryProtocol)`, so a test registers
+a fake under that key and everything above it runs for real:
 
 ```swift
-private struct TestModule: FlightModule {
-    let users: InMemoryUsers
+let container = try TestContainer.build {
+    Components(UserController.self)
+    Fake(users)
+}
+let client = try TestClient(container: container)
 
-    func configure(_ container: Container) throws {
-        try UserController._flightRegister(container)
-        let users = self.users
-        container.register((any UserRepositoryProtocol).self, scope: .scoped) { _ in users }
-    }
+let response = await client.get("/users")
+```
+
+`Components` registers exactly the components under test, through the same
+registration thunk the application uses — so the controller reaches the
+container the way it does in production. `TestClient` dispatches **in
+process**: routing, middleware, dependency injection, request decoding, and
+JSON encoding all run, but there is no socket and no port to collide with.
+These tests are fast because the network is absent, not because the framework
+is stubbed.
+
+A fake is just a type that conforms. There is no mock framework and nothing
+generated:
+
+```swift
+final class InMemoryUsers: UserRepositoryProtocol, Sendable {
+    private let users = Mutex<[User]>([])
+    var stored: [User] { users.withLock { $0 } }
+    ...
 }
 ```
 
-The controller is registered through **its own macro-generated thunk** —
-exactly what `flightRegisterAll` calls in production. Only the bottommost
-seam is swapped. There is no mock framework and no proxy: a fake is a type
-conforming to the protocol.
+Because it is a real object, a test can interrogate it afterwards — which is
+how you assert on effects rather than only on what came back:
+
+```swift
+#expect(response.status == .badRequest)
+#expect(users.stored.isEmpty, "validation must run before the write")
+```
+
+### Three sizes of test
+
+`Components` is the middle one, and the one you will reach for most:
+
+| | What runs | Use it when |
+|---|---|---|
+| Call the handler | One method | The logic is the point and routing is not |
+| `Components` | The real controller, routing, middleware, DI | Most of the time |
+| `AppModule` + `override` | Every module the application boots | Checking the wiring itself |
+
+The third deserves a word, because it catches a class of bug the other two
+cannot. Registering a fake *alongside* a real module fails — registration is
+first-wins and reports the collision when the container freezes — so swapping
+one seam in a fully booted application uses `override`:
+
+```swift
+let container = try TestContainer.build {
+    AppModule()
+} overriding: { container in
+    container.override((any UserRepositoryProtocol).self, scope: .scoped) { _ in users }
+}
+```
+
+Freezing a container is where lifetime mistakes surface: a singleton that
+captured a request-scoped repository, or two modules both claiming a key.
+Testing a single layer skips the freeze, so it skips those. The demo carries
+a `BootstrapTests` suite that boots its real modules for exactly this reason.
+
+The complete suite is in
+[`templates/basics`](templates/basics/Tests/AppTests/UserControllerTests.swift).
 
 ### Checkpoint
 
