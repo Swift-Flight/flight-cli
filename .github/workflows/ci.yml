@@ -70,3 +70,15 @@ jobs:
       - name: Verify template
         working-directory: flight-start
         run: ./CI/verify-templates.sh ${{ matrix.tier }}
+
+  tutorial:
+    name: Tutorial matches the templates
+    runs-on: ubuntu-latest
+    container: swift:6.2.3
+    steps:
+      - uses: actions/checkout@v4
+
+      # Cheap, and it catches the failure that actually happened last time:
+      # a tutorial telling you to create files that no longer exist.
+      - name: Verify tutorial
+        run: ./CI/verify-tutorial.sh
