@@ -56,7 +56,8 @@ struct TraitRewriter {
     func rewrite(_ manifest: String) -> String {
         var result = manifest
         for package in ["flight", "flight-data"] {
-            let wanted = capabilities
+            let wanted =
+                capabilities
                 .filter { $0.trait.package == package }
                 .map(\.trait.name)
                 .sorted()
@@ -80,7 +81,8 @@ struct TraitRewriter {
         in manifest: String, package: String, with names: [String]
     ) -> String {
         let marker = "Swift-Flight/\(package).git"
-        var lines = manifest.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        var lines = manifest.split(separator: "\n", omittingEmptySubsequences: false).map(
+            String.init)
         guard let index = lines.firstIndex(where: { $0.contains(marker) }) else { return manifest }
 
         // The declaration may wrap, so find where this one ends.
@@ -90,7 +92,8 @@ struct TraitRewriter {
         }
 
         var declaration = lines[index...end].joined(separator: "\n")
-        let rendered = names.isEmpty
+        let rendered =
+            names.isEmpty
             ? "traits: []" : "traits: [" + names.map { "\"\($0)\"" }.joined(separator: ", ") + "]"
 
         if let range = declaration.range(of: #"traits: \[[^\]]*\]"#, options: .regularExpression) {
@@ -102,7 +105,10 @@ struct TraitRewriter {
                 range, with: declaration[range] + ", " + rendered)
         }
 
-        lines.replaceSubrange(index...end, with: declaration.split(separator: "\n", omittingEmptySubsequences: false).map(String.init))
+        lines.replaceSubrange(
+            index...end,
+            with: declaration.split(separator: "\n", omittingEmptySubsequences: false).map(
+                String.init))
         return lines.joined(separator: "\n")
     }
 }
