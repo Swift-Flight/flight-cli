@@ -1041,7 +1041,151 @@ that lies to half your users.
 `FlightCacheModule` is in-memory by default. Swapping in Valkey is a module
 change and a trait, not a code change.
 
-## Stage 3.7 — Wiring it together
+## Stage 3.7 — Work on a schedule
+
+Two of the things this app does are not requests. A nightly summary, and
+keeping the expensive digests warm so the first dashboard load of the morning
+is not the slow one.
+
+Create `Sources/App/Jobs/ChatJobs.swift`:
+
+```swift
+@Scheduler
+struct ChatJobs {
+    @Autowired var digests: RoomDigestService
+
+    @Scheduled("0 0 3 * * *", timeZone: "UTC")
+    func nightlySummary() async throws {
+        let busy = try await digests.activity(minimumMessages: 10)
+        print("nightly summary: \(busy.count) active room(s)")
+    }
+
+    @Scheduled(every: .minutes(1), initialDelay: .seconds(5), onEveryNode: true)
+    func warmDigests() async throws {
+        _ = try await digests.headlines()
+    }
+}
+```
+
+Add `FlightSchedulerModule.self` to `AppModule.dependencies` and that is the
+whole setup. Nothing registers `ChatJobs` by hand — the plugin found it, the
+same way it found your controllers.
+
+A `@Scheduler` type is an ordinary component. It injects with `@Autowired`
+like anything else, and its jobs are ordinary methods — so testing one needs
+no scheduler, no clock and no database, exactly like testing a service:
+
+```swift
+private func jobs(rooms: [RoomActivity]) throws -> ChatJobs {
+    let container = try TestContainer.build {
+        Components(ChatJobs.self)
+        FakeDigests(rooms: rooms)
+    }
+    return try container.resolve(ChatJobs.self)
+}
+
+@Test func summaryCountsBusyRooms() async throws {
+    try await jobs(rooms: [...]).nightlySummary()
+}
+```
+
+Resolved from a container rather than constructed directly, and that is not
+incidental: a macro that generates an initializer replaces the memberwise one,
+so `ChatJobs(digests:)` does not exist. Every component in this app is built
+the same way for the same reason — see `ChatJobsTests`, which is the code
+above in full.
+
+Note that `ChatJobs` injects `(any DigestReading)` rather than
+`RoomDigestService`. The concrete service carries a live cache and a gateway
+that needs Postgres; a three-method protocol needs neither. That is the same
+seam `RoomStore` and `DigestInvalidating` exist for, and it is what makes the
+test above two lines.
+
+### The schedule is checked by the build
+
+Change the hour to `25` and rebuild:
+
+```
+error: hour: 25 is out of range 0–23. In "0 0 25 * * *".
+```
+
+Not a job that silently never fires. The macro validates with the *same
+parser the scheduler runs* — the cron engine is a separate, dependency-free
+target that both import — so the build and the runtime cannot disagree about
+what a schedule means.
+
+Six fields, seconds first (`second minute hour day-of-month month
+day-of-week`). The classic five-field crontab shape is accepted too and means
+the same thing at second zero. `L`, `W`, `#`, `?` and `@daily` are **refused**
+rather than guessed at: implementations disagree about what they mean, and a
+schedule that quietly means something other than you intended is worse than
+one that will not compile.
+
+### The two kinds of job
+
+This is the part worth slowing down for, and it is why there are two jobs here
+rather than one.
+
+`nightlySummary` runs **once**. Not once per server — once. On this demo that
+is invisible, because there is one server. It stops being invisible the moment
+there are two: a summary that emails, bills, or writes a report must not do it
+three times.
+
+`warmDigests` runs **on every server**, and says so. The demo's cache is
+in-memory, so it is per-process: warming it on one server leaves the others
+cold. That is work that is per-process by nature.
+
+Note what the API does *not* ask you to know. There is no "cluster" anywhere
+in the common case — `@Scheduled("0 0 3 * * *")` reads the same whether you
+run one server or fifty, and the default is the safe one. `onEveryNode` shows
+up only where it means something.
+
+Swap `FlightCacheModule` for the Valkey-backed one and `warmDigests` becomes
+the wrong annotation, because a shared cache only needs warming once. Where
+the state lives is what decides which kind a job is — that is a real design
+question, not a detail.
+
+### Running once when there really are several servers
+
+`once` needs something for the servers to contend through. Register a
+coordinator:
+
+```swift
+container.register((any JobCoordinator).self, scope: .singleton) { c in
+    PostgresJobCoordinator(dataSource: try c.resolve(PostgresDataSource.self))
+}
+```
+
+Without one, the scheduler tells you at startup:
+
+```
+warning: 1 job(s) are set to run once per firing, and no distributed
+JobCoordinator is registered. That is correct on a single server. If you run
+more than one, every one of them will run these jobs — register a coordinator.
+```
+
+That line is deliberate. The failure it describes is otherwise completely
+silent: you find out from duplicated data, which is the worst place to learn
+it.
+
+### What happens when a job misbehaves
+
+| | |
+|---|---|
+| It throws | Logged and counted; retried at its next firing. One broken job never stops the others. |
+| It overruns its next firing | Skipped by default. Piling a second copy onto a job that has grown slow is how a slow job becomes an outage. |
+| The clocks go back | A daily job runs once, not twice. Forward, a job in the missing hour runs once, late, rather than not at all. |
+
+### Checkpoint
+
+```bash
+swift run App &
+curl -sf --retry 30 --retry-connrefused --retry-delay 1 localhost:8080/actuator/health
+# the startup log names the scheduler's mode and job count
+kill %1
+```
+
+## Stage 3.8 — Wiring it together
 
 `AppModule` now names what the app is made of:
 
@@ -1053,6 +1197,7 @@ static var dependencies: [any FlightModule.Type] {
         FlightChannelsModule.self,
         FlightPresenceModule.self,
         FlightCacheModule.self,
+        FlightSchedulerModule.self,
         FlightSecurityModule.self,
     ]
 }

@@ -22,7 +22,7 @@ import Foundation
 /// Registered by hand in `AppModule` rather than scanned, because its
 /// dependency is the gateway rather than a component the container can wire
 /// on its own.
-struct RoomDigestService: DigestInvalidating {
+struct RoomDigestService: DigestInvalidating, DigestReading {
     let chat: ChatGateway
 
     /// Cached per `minimumMessages` — the argument is part of the key, so

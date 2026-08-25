@@ -22,6 +22,19 @@ trap 'rm -f "$tmp" "$tmp.files"' EXIT
 # .vscode/, an editor backup, a stray build artifact — would otherwise be
 # embedded on one machine and absent on another, and the --check in CI would
 # report the committed file as stale for a reason nobody could see.
+#
+# An untracked file under templates/ is therefore *silently skipped*, which
+# is a trap: adding a new template file and regenerating produces a binary
+# that emits a project missing it, and the failure surfaces three steps later
+# as "cannot find type X in scope" inside a generated project. Refuse instead.
+untracked="$(git ls-files --others --exclude-standard templates)"
+if [ -n "$untracked" ]; then
+  echo "::error::untracked files under templates/ would be silently omitted:" >&2
+  echo "$untracked" | sed 's/^/  /' >&2
+  echo "git add them, then regenerate." >&2
+  exit 1
+fi
+
 git ls-files templates > "$tmp.files"
 
 python3 - "$tmp" "$tmp.files" <<'PY'

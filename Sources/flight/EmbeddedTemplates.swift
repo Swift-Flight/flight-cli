@@ -597,7 +597,7 @@ let package = Package(
     dependencies: [
         // "defaults" keeps the Web trait on; "Security" adds the resource
         // server. Naming any trait means "default" must be named too.
-        .package(url: "https://github.com/Swift-Flight/flight.git", from: "0.1.2", traits: ["Security"]),
+        .package(url: "https://github.com/Swift-Flight/flight.git", from: "0.2.0", traits: ["Security"]),
         .package(url: "https://github.com/Swift-Flight/flight-data.git", from: "0.1.2", traits: ["Postgres"]),
     ],
     targets: [
@@ -608,6 +608,7 @@ let package = Package(
                 .product(name: "FlightWeb", package: "flight"),
                 .product(name: "FlightTransport", package: "flight"),
                 .product(name: "FlightActuator", package: "flight"),
+                .product(name: "FlightScheduler", package: "flight"),
                 .product(name: "FlightSecurityCore", package: "flight"),
                 .product(name: "FlightPubSub", package: "flight"),
                 .product(name: "FlightChannels", package: "flight"),
@@ -1464,6 +1465,60 @@ struct User: Encodable, Equatable, Sendable, ResponseEncodable {
 }
 
 """#,
+            "Sources/App/Jobs/ChatJobs.swift": #"""
+import FlightCore
+import FlightScheduler
+import Foundation
+
+/// Scheduled work, as methods.
+///
+/// A `@Scheduler` type is an ordinary component — it injects what it needs
+/// the same way a controller or a service does, and nothing registers it by
+/// hand. The build plugin finds it.
+///
+/// The two jobs here are deliberately the two *different* kinds, because the
+/// difference is the only thing about scheduling that is genuinely hard.
+@Scheduler
+struct ChatJobs {
+    @Autowired var digests: (any DigestReading)
+
+    /// Runs once. Not once per server — once.
+    ///
+    /// On this demo that distinction is invisible, because there is one
+    /// server. It stops being invisible the moment there are two: a summary
+    /// that emails, bills, or writes a report must not do it twice, and the
+    /// default is `once` precisely so the safe behaviour is what you get
+    /// without thinking about it.
+    ///
+    /// Running once across several servers needs a `JobCoordinator` —
+    /// `FlightSchedulerPostgres` provides one. Without it the scheduler warns
+    /// at startup rather than silently running this on every server, which is
+    /// the kind of failure you would otherwise discover from the data.
+    @Scheduled("0 0 3 * * *", timeZone: "UTC")
+    func nightlySummary() async throws {
+        let busy = try await digests.activity(minimumMessages: 10)
+        // A real deployment would email or archive this. Logging keeps the
+        // demo honest about what it actually does.
+        print("nightly summary: \(busy.count) active room(s)")
+    }
+
+    /// Runs on every server, every time.
+    ///
+    /// The opposite case, and the reason `onEveryNode` exists. The demo's
+    /// cache is in-memory, so it is *per process*: warming it on one server
+    /// leaves every other server cold. This is work that is per-process by
+    /// nature, and saying so is the whole distinction.
+    ///
+    /// Swap `FlightCacheModule` for the Valkey-backed one and this becomes
+    /// the wrong annotation — a shared cache only needs warming once. Where
+    /// the state lives is what decides which of the two a job is.
+    @Scheduled(every: .minutes(1), initialDelay: .seconds(5), onEveryNode: true)
+    func warmDigests() async throws {
+        _ = try await digests.headlines()
+    }
+}
+
+"""#,
             "Sources/App/Main.swift": #"""
 import FlightActuator
 import FlightCache
@@ -1472,6 +1527,7 @@ import FlightCore
 import FlightDataPostgres
 import FlightPresence
 import FlightPubSub
+import FlightScheduler
 import FlightSecurityCore
 import FlightTransport
 import FlightWeb
@@ -1495,6 +1551,7 @@ struct AppModule: FlightModule {
             FlightChannelsModule.self,
             FlightPresenceModule.self,
             FlightCacheModule.self,
+            FlightSchedulerModule.self,
             // FlightSecurityModule is deliberately NOT here. It installs its
             // generic OIDC validator unless one is already registered, so it
             // has to configure *after* this module rather than before it —
@@ -1530,6 +1587,11 @@ struct AppModule: FlightModule {
         }
         container.register(RoomDigestService.self, scope: .singleton) { c in
             RoomDigestService(chat: try c.resolve(ChatGateway.self))
+        }
+        // The read seam scheduled jobs depend on, so a job is testable
+        // without a cache or a database behind it.
+        container.register((any DigestReading).self, scope: .singleton) { c in
+            try c.resolve(RoomDigestService.self)
         }
 
         // The bring-your-own-auth seam. FlightSecurityModule installs its
@@ -2231,6 +2293,22 @@ protocol DigestInvalidating: Sendable {
 }
 
 """#,
+            "Sources/App/Services/DigestReading.swift": #"""
+import Foundation
+
+/// The two digest reads a scheduled job needs, as a seam.
+///
+/// Same reason as `RoomStore` and `DigestInvalidating`: `RoomDigestService`
+/// carries a live cache and a gateway that needs a database, so a job
+/// depending on it concretely could not be tested without both. Depending on
+/// three method signatures instead means `ChatJobs` is testable by
+/// constructing it — no container, no scheduler, no Postgres.
+protocol DigestReading: Sendable {
+    func activity(minimumMessages: Int) async throws -> [RoomActivity]
+    func headlines() async throws -> [RoomHeadline]
+}
+
+"""#,
             "Sources/App/Services/RoomDigestService.swift": #"""
 import FlightCache
 import FlightCore
@@ -2256,7 +2334,7 @@ import Foundation
 /// Registered by hand in `AppModule` rather than scanned, because its
 /// dependency is the gateway rather than a component the container can wire
 /// on its own.
-struct RoomDigestService: DigestInvalidating {
+struct RoomDigestService: DigestInvalidating, DigestReading {
     let chat: ChatGateway
 
     /// Cached per `minimumMessages` — the argument is part of the key, so
@@ -2589,6 +2667,74 @@ struct BootstrapTests {
         let container = try boot()
         #expect(throws: Never.self) { try container.resolve(RoomDigestService.self) }
         #expect(throws: Never.self) { try container.resolve((any RoomStore).self) }
+    }
+}
+
+"""#,
+            "Tests/AppTests/ChatJobsTests.swift": #"""
+import FlightCore
+import FlightWebTesting
+import Foundation
+import Testing
+
+@testable import App
+
+/// A scheduled job is an ordinary method on an ordinary component.
+///
+/// No scheduler and no database: `ChatJobs` is resolved from a test container
+/// with the digest reads stubbed, exactly as `UserServiceTests` resolves a
+/// service with its repository stubbed. Whether the job fires at 03:00 is the
+/// cron engine's business and is tested there, not here.
+@Suite("ChatJobs — jobs as plain methods")
+struct ChatJobsTests {
+
+    private struct StubDigests: DigestReading {
+        let rooms: [RoomActivity]
+
+        func activity(minimumMessages: Int) async throws -> [RoomActivity] {
+            rooms.filter { $0.messages >= minimumMessages }
+        }
+        func headlines() async throws -> [RoomHeadline] { [] }
+    }
+
+    /// Binds the stub under the same key the application binds the real
+    /// service under.
+    private struct FakeDigests: FlightModule {
+        let rooms: [RoomActivity]
+        // FlightModule requires a no-argument init — bootstrap instantiates
+        // modules itself — so the seeded one is a second initializer, the
+        // same shape FakeRepository uses.
+        init() { self.rooms = [] }
+        init(rooms: [RoomActivity]) { self.rooms = rooms }
+
+        func configure(_ container: Container) throws {
+            let rooms = self.rooms
+            container.register((any DigestReading).self, scope: .singleton) { _ in
+                StubDigests(rooms: rooms)
+            }
+        }
+    }
+
+    private func jobs(rooms: [RoomActivity]) throws -> ChatJobs {
+        let container = try TestContainer.build {
+            Components(ChatJobs.self)
+            FakeDigests(rooms: rooms)
+        }
+        return try container.resolve(ChatJobs.self)
+    }
+
+    @Test("the nightly summary runs against the busy rooms")
+    func summaryCountsBusyRooms() async throws {
+        let jobs = try jobs(rooms: [
+            RoomActivity(room: "general", messages: 42, lastSentAt: Date()),
+            RoomActivity(room: "quiet", messages: 1, lastSentAt: nil),
+        ])
+        try await jobs.nightlySummary()
+    }
+
+    @Test("warming the digests asks for the headlines")
+    func warmingReadsHeadlines() async throws {
+        try await jobs(rooms: []).warmDigests()
     }
 }
 

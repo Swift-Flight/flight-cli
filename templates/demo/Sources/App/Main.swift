@@ -5,6 +5,7 @@ import FlightCore
 import FlightDataPostgres
 import FlightPresence
 import FlightPubSub
+import FlightScheduler
 import FlightSecurityCore
 import FlightTransport
 import FlightWeb
@@ -28,6 +29,7 @@ struct AppModule: FlightModule {
             FlightChannelsModule.self,
             FlightPresenceModule.self,
             FlightCacheModule.self,
+            FlightSchedulerModule.self,
             // FlightSecurityModule is deliberately NOT here. It installs its
             // generic OIDC validator unless one is already registered, so it
             // has to configure *after* this module rather than before it —
@@ -63,6 +65,11 @@ struct AppModule: FlightModule {
         }
         container.register(RoomDigestService.self, scope: .singleton) { c in
             RoomDigestService(chat: try c.resolve(ChatGateway.self))
+        }
+        // The read seam scheduled jobs depend on, so a job is testable
+        // without a cache or a database behind it.
+        container.register((any DigestReading).self, scope: .singleton) { c in
+            try c.resolve(RoomDigestService.self)
         }
 
         // The bring-your-own-auth seam. FlightSecurityModule installs its
