@@ -218,10 +218,21 @@ reading `Configuration` directly.
 
 ```bash
 swift run App &
+curl -sf --retry 30 --retry-connrefused --retry-delay 1 localhost:8080/actuator/health
 curl localhost:8080/          # → App is flying
 curl localhost:8080/actuator/health
 kill %1
 ```
+
+That first `curl` is not ceremony. `swift run` builds before it runs, so the
+first time through, an immediate request fires while the compiler is still
+working and gets connection refused. `--retry-connrefused` waits for the
+server to bind and gives up after thirty tries rather than hanging forever —
+a health check that never fails is not a health check.
+
+Waiting on `/actuator/health` specifically is the reason the actuator
+registers a probe by default even outside development: this is the same thing
+an orchestrator does before routing traffic to a new instance.
 
 ## Stage 1.5 — A test
 
@@ -633,6 +644,7 @@ The full file, including `CreateUserRequest`, is in
 
 ```bash
 swift run App &
+curl -sf --retry 30 --retry-connrefused --retry-delay 1 localhost:8080/actuator/health
 curl -XPOST localhost:8080/users -H 'content-type: application/json' \
      -d '{"name":"Ada","email":"ada@example.com"}'          # → 201
 curl localhost:8080/users                                    # → [Ada]
@@ -1047,6 +1059,7 @@ everything the protocol asks for.
 
 ```bash
 swift run App &
+curl -sf --retry 30 --retry-connrefused --retry-delay 1 localhost:8080/actuator/health
 
 TOKEN=demo:ada:moderator
 curl -XPOST localhost:8080/rooms -H 'content-type: application/json' \
