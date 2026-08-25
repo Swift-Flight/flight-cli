@@ -89,10 +89,20 @@ for f in "$scratch"/cp*.sh; do
   work="$scratch/run-$name"
   "$cli" new App --tier "$tier" --path "$work" >/dev/null 2>&1
 
-  # The tutorial hardcodes a local database URL; CI's is elsewhere.
+  # The tutorial hardcodes a local database URL; CI's is elsewhere. Both of
+  # these are needed, because the two halves read different sources:
+  #
+  #   the migrate CLI  ->  $FLIGHT_DATABASE_URL   (it does not read flight.yaml)
+  #   the application  ->  flight.yaml            (it does not read that variable)
+  #
+  # Patching only the first is what made cp06 and cp08 fail: the app kept
+  # dialling 127.0.0.1:55432, died on connection refused, and the curls in
+  # those checkpoints were racing a socket that existed for a few
+  # milliseconds between "transport listening" and the pool giving up.
   if [ -n "${FLIGHT_TEST_DATABASE_URL:-}" ]; then
     sed -i "s|^export FLIGHT_DATABASE_URL=.*|export FLIGHT_DATABASE_URL=$FLIGHT_TEST_DATABASE_URL|" "$f"
     export FLIGHT_DATABASE_URL="$FLIGHT_TEST_DATABASE_URL"
+    sed -i "s|url: \"postgres://[^\"]*\"|url: \"$FLIGHT_TEST_DATABASE_URL\"|" "$work/flight.yaml"
   fi
 
   # `set -m` because checkpoints background a server and then `kill %1`, which
