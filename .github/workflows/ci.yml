@@ -26,10 +26,13 @@ jobs:
         tier: [skeleton, basics, demo]
 
     steps:
-      # The official Swift images are slim and carry no Python; the
-      # verification scripts in CI/ need it.
-      - name: Install python3
-        run: apt-get update -qq && apt-get install -y -qq python3
+      # The official Swift images are slim: no python3 for the CI/ scripts,
+      # and no curl — which three tutorial checkpoints use to prove a route
+      # actually answers. A missing curl fails those checkpoints as exit 127,
+      # which reads as "the tutorial is broken" rather than "the image is
+      # thin".
+      - name: Install python3 and curl
+        run: apt-get update -qq && apt-get install -y -qq python3 curl
 
       # Even with flight and flight-data checked out as siblings, their own
       # dependencies — hangar, swift-changeset — are resolved by URL. Every
@@ -84,10 +87,13 @@ jobs:
     runs-on: ubuntu-latest
     container: swift:6.3.3
     steps:
-      # The official Swift images are slim and carry no Python; the
-      # verification scripts in CI/ need it.
-      - name: Install python3
-        run: apt-get update -qq && apt-get install -y -qq python3
+      # The official Swift images are slim: no python3 for the CI/ scripts,
+      # and no curl — which three tutorial checkpoints use to prove a route
+      # actually answers. A missing curl fails those checkpoints as exit 127,
+      # which reads as "the tutorial is broken" rather than "the image is
+      # thin".
+      - name: Install python3 and curl
+        run: apt-get update -qq && apt-get install -y -qq python3 curl
 
       - uses: actions/checkout@v4
 
@@ -110,10 +116,13 @@ jobs:
           --health-cmd pg_isready --health-interval 10s
           --health-timeout 5s --health-retries 5
     steps:
-      # The official Swift images are slim and carry no Python; the
-      # verification scripts in CI/ need it.
-      - name: Install python3
-        run: apt-get update -qq && apt-get install -y -qq python3
+      # The official Swift images are slim: no python3 for the CI/ scripts,
+      # and no curl — which three tutorial checkpoints use to prove a route
+      # actually answers. A missing curl fails those checkpoints as exit 127,
+      # which reads as "the tutorial is broken" rather than "the image is
+      # thin".
+      - name: Install python3 and curl
+        run: apt-get update -qq && apt-get install -y -qq python3 curl
 
       - uses: actions/checkout@v4
 
