@@ -16,8 +16,8 @@ let package = Package(
     dependencies: [
         // "defaults" keeps the Web trait on; "Security" adds the resource
         // server. Naming any trait means "default" must be named too.
-        .package(url: "https://github.com/Swift-Flight/flight.git", from: "0.2.0", traits: ["Security"]),
-        .package(url: "https://github.com/Swift-Flight/flight-data.git", from: "0.1.2", traits: ["Postgres"]),
+        .package(url: "https://github.com/Swift-Flight/flight.git", from: "0.2.1", traits: ["Security"]),
+        .package(url: "https://github.com/Swift-Flight/flight-data.git", from: "0.2.0", traits: ["Postgres"]),
     ],
     targets: [
         .executableTarget(
@@ -35,6 +35,7 @@ let package = Package(
                 .product(name: "FlightPresence", package: "flight"),
                 .product(name: "FlightDataPostgres", package: "flight-data"),
                 .product(name: "FlightMigrate", package: "flight-data"),
+                .product(name: "FlightSchedulerPostgres", package: "flight-data"),
                 .product(name: "FlightCache", package: "flight-data"),
             ],
             plugins: [

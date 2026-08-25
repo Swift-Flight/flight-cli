@@ -1147,8 +1147,9 @@ question, not a detail.
 
 ### Running once when there really are several servers
 
-`once` needs something for the servers to contend through. Register a
-coordinator:
+`once` needs something for the servers to contend through. `AppModule`
+registers one — it is in the demo already, because a job that is only safe on
+one machine is not much of a demonstration:
 
 ```swift
 container.register((any JobCoordinator).self, scope: .singleton) { c in
@@ -1156,7 +1157,13 @@ container.register((any JobCoordinator).self, scope: .singleton) { c in
 }
 ```
 
-Without one, the scheduler tells you at startup:
+It claims a lease row keyed on the job and the *firing instant*, so exactly
+one server wins each firing — and two servers whose clocks differ by a second
+still agree which firing they are contending for. On this single-process demo
+it changes nothing observable, which is rather the point: the code you write
+is the same either way.
+
+Comment it out and the scheduler tells you at startup:
 
 ```
 warning: 1 job(s) are set to run once per firing, and no distributed

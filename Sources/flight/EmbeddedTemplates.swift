@@ -26,7 +26,7 @@ let package = Package(
         .executable(name: "App", targets: ["App"])
     ],
     dependencies: [
-        .package(url: "https://github.com/Swift-Flight/flight.git", from: "0.1.2", traits: ["Web"]),
+        .package(url: "https://github.com/Swift-Flight/flight.git", from: "0.2.1", traits: ["Web"]),
         .package(url: "https://github.com/Swift-Flight/flight-data.git", from: "0.1.2", traits: ["Postgres"]),
     ],
     targets: [
@@ -597,8 +597,8 @@ let package = Package(
     dependencies: [
         // "defaults" keeps the Web trait on; "Security" adds the resource
         // server. Naming any trait means "default" must be named too.
-        .package(url: "https://github.com/Swift-Flight/flight.git", from: "0.2.0", traits: ["Security"]),
-        .package(url: "https://github.com/Swift-Flight/flight-data.git", from: "0.1.2", traits: ["Postgres"]),
+        .package(url: "https://github.com/Swift-Flight/flight.git", from: "0.2.1", traits: ["Security"]),
+        .package(url: "https://github.com/Swift-Flight/flight-data.git", from: "0.2.0", traits: ["Postgres"]),
     ],
     targets: [
         .executableTarget(
@@ -616,6 +616,7 @@ let package = Package(
                 .product(name: "FlightPresence", package: "flight"),
                 .product(name: "FlightDataPostgres", package: "flight-data"),
                 .product(name: "FlightMigrate", package: "flight-data"),
+                .product(name: "FlightSchedulerPostgres", package: "flight-data"),
                 .product(name: "FlightCache", package: "flight-data"),
             ],
             plugins: [
@@ -1528,6 +1529,7 @@ import FlightDataPostgres
 import FlightPresence
 import FlightPubSub
 import FlightScheduler
+import FlightSchedulerPostgres
 import FlightSecurityCore
 import FlightTransport
 import FlightWeb
@@ -1592,6 +1594,22 @@ struct AppModule: FlightModule {
         // without a cache or a database behind it.
         container.register((any DigestReading).self, scope: .singleton) { c in
             try c.resolve(RoomDigestService.self)
+        }
+
+        // Makes `.once` mean once across every server rather than once per
+        // server. This demo runs one process, where the coordinator changes
+        // nothing — but registering it is the whole difference between a
+        // nightly job that is safe to scale and one that is not, and the
+        // scheduler warns at startup when it is missing.
+        container.register((any JobCoordinator).self, scope: .singleton) { c in
+            // Qualified: data sources are registered under their name so an
+            // app with two databases can say which it means. A single-database
+            // app never writes the qualifier anywhere else — this is the one
+            // place that resolves the pool directly rather than through a
+            // scoped connection.
+            PostgresJobCoordinator(
+                dataSource: try c.resolve(
+                    PostgresDataSource.self, qualifier: PrimaryDataSource.name))
         }
 
         // The bring-your-own-auth seam. FlightSecurityModule installs its
@@ -3542,7 +3560,7 @@ let package = Package(
         // resolved. "Web" is HTTP, WebSockets, Channels and Presence; add
         // "Security" for authentication. Naming neither gives you just the
         // container and lifecycle.
-        .package(url: "https://github.com/Swift-Flight/flight.git", from: "0.1.2", traits: ["Web"])
+        .package(url: "https://github.com/Swift-Flight/flight.git", from: "0.2.1", traits: ["Web"])
     ],
     targets: [
         .executableTarget(

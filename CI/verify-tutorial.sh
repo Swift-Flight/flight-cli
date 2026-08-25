@@ -56,6 +56,42 @@ for name in missing:
 sys.exit(1 if missing else 0)
 PY
 if [ $? -eq 0 ]; then echo "  ✔ every symbol shown is defined in a template"; else status=1; fi
+echo "── constructed types"
+# The check above only looks at what the tutorial *declares*. It never looked
+# at what the tutorial *calls*, which is how a snippet registering
+# `PostgresJobCoordinator(...)` shipped while no template could resolve that
+# type: a reader copying it got "cannot find PostgresJobCoordinator in scope".
+#
+# Every framework type the tutorial constructs must appear somewhere in the
+# templates — defined there, or used there, which means the package providing
+# it is a real dependency of a real project.
+python3 - <<'PYCHECK'
+import re, pathlib, sys
+
+tutorial = pathlib.Path("TUTORIAL.md").read_text()
+haystack = "\n".join(p.read_text() for p in pathlib.Path("templates").rglob("*.swift"))
+haystack += "\n" + "\n".join(p.read_text() for p in pathlib.Path("templates").rglob("Package.swift"))
+
+# Swift and Foundation types a reader already has.
+stdlib = {
+    "Data", "Date", "UUID", "String", "Int", "Double", "Bool", "URL", "Set",
+    "Array", "Dictionary", "Duration", "Task", "Error", "Result", "Optional",
+    "Logger", "Configuration", "DateComponents", "TimeZone", "Calendar",
+    "JSONEncoder", "JSONDecoder", "ByteBuffer", "Character", "Issue",
+}
+
+used = set()
+for block in re.findall(r'```swift\n(.*?)```', tutorial, re.S):
+    for name in re.findall(r'(?<![@.\w])\b([A-Z][A-Za-z0-9_]*)\s*\(', block):
+        used.add(name)
+
+missing = sorted(n for n in used - stdlib if n not in haystack)
+for name in missing:
+    print(f"  ✘ tutorial constructs '{name}', which no template can resolve")
+sys.exit(1 if missing else 0)
+PYCHECK
+if [ $? -eq 0 ]; then echo "  ✔ every constructed type is resolvable"; else status=1; fi
+
 
 echo "── checkpoint commands"
 # Each part must end at a tier, and say so.
