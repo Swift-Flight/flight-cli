@@ -105,10 +105,34 @@ for f in "$scratch"/cp*.sh; do
   # and time only the checkpoint itself.
   (cd "$work" && swift build) >"$scratch/$name.build.log" 2>&1
 
-  timeout --signal=INT --kill-after=10s "${CHECKPOINT_TIMEOUT:-90}s" \
-    bash -c "cd '$work' && set -em && bash -e '$f'" \
-    >"$scratch/$name.log" 2>&1
-  status=$?
+  # `setsid` puts the block in its own process group so everything it starts
+  # can be killed as a unit below. Without that, a checkpoint that fails
+  # before its `kill %1` leaves the server running — and because the process
+  # shows up in `ps` as a *relative* path (`.build/.../App`), a `pkill -f`
+  # on the work directory never matches it. One leaked server holds port 8080
+  # and every later checkpoint dies with "Address already in use", which
+  # reads as a cascade of unrelated failures.
+  setsid bash -c "cd '$work' && set -em && bash -e '$f'" \
+    >"$scratch/$name.log" 2>&1 &
+  block=$!
+
+  status=0
+  waited=0
+  limit="${CHECKPOINT_TIMEOUT:-90}"
+  while kill -0 "$block" 2>/dev/null && [ "$waited" -lt "$limit" ]; do
+    sleep 1
+    waited=$((waited + 1))
+  done
+  if kill -0 "$block" 2>/dev/null; then
+    # Still serving at the deadline: the pass condition for the interactive
+    # checkpoints. SIGINT first, as Ctrl-C would.
+    status=124
+    kill -INT -- "-$block" 2>/dev/null || true
+    sleep 2
+  else
+    wait "$block"
+    status=$?
+  fi
 
   case $status in
     0)   echo "  ✔ $name (Part $part, $tier)" ;;
@@ -121,8 +145,12 @@ for f in "$scratch"/cp*.sh; do
          failed=$((failed + 1)) ;;
   esac
 
-  # Nothing from one checkpoint may outlive it into the next.
-  pkill -f "$work" 2>/dev/null || true
+  # Nothing from one checkpoint may outlive it into the next. Killing the
+  # process *group* is what makes this actually true — see the setsid note
+  # above for why matching on the work directory does not.
+  kill -TERM -- "-$block" 2>/dev/null || true
+  sleep 1
+  kill -KILL -- "-$block" 2>/dev/null || true
 done
 
 echo "  ── $total checkpoint(s): $((total - failed - skipped)) passed, $failed failed, $skipped skipped"
