@@ -8,6 +8,7 @@ import FlightPubSub
 import FlightSecurityCore
 import FlightTransport
 import FlightWeb
+import Foundation
 
 /// Flight Security's `Principal` and Flight Channels' `ChannelPrincipal` are
 /// deliberately unrelated: Channels has no dependency on Security, so a
@@ -100,20 +101,41 @@ struct AppModule: FlightModule {
 
 @main
 struct Main {
-    static func main() async throws {
+    static func main() async {
         // Steps 1–3: Flight Config (flight.yaml + FLIGHT_* env). Steps 4–9:
         // container, module DAG, freeze, ServiceGroup — request serving
         // starts only after the whole DAG has registered.
-        try await Flight.bootstrap(
-            configuration: try Configuration.load(),
-            modules: [
-                FlightWebModule<FlightTransport>.self,  // choosing a transport = choosing a module
-                AppModule.self,
-                // After AppModule, so it finds the validator registered above
-                // and stands down instead of installing the OIDC default.
-                FlightSecurityModule.self,
-                ActuatorModule.self,
-            ]
-        )
+        do {
+            try await Flight.bootstrap(
+                configuration: try Configuration.load(),
+                modules: [
+                    FlightWebModule<FlightTransport>.self,  // choosing a transport = choosing a module
+                    AppModule.self,
+                    // After AppModule, so it finds the validator registered
+                    // above and stands down instead of installing the OIDC
+                    // default.
+                    FlightSecurityModule.self,
+                    ActuatorModule.self,
+                ]
+            )
+        } catch {
+            // Not `main() async throws`. An error escaping `main` is reported
+            // by the Swift runtime as "Fatal error: Error raised at top
+            // level" followed by a register dump and a backtrace — which is
+            // what a new project sees when Postgres is not running or port
+            // 8080 is already bound. Those two deserve a line of text and a
+            // non-zero exit, not a crash report.
+            //
+            // `String(reflecting:)` rather than plain interpolation because
+            // PostgresNIO's `description` is deliberately redacted — it says
+            // "Generic description to prevent accidental leakage" and nothing
+            // about what went wrong. The reflected form names the host, the
+            // port and the errno. That is safe here specifically: this is a
+            // startup failure, so there are no user queries or bind values to
+            // leak, and the process is about to exit.
+            FileHandle.standardError.write(
+                Data("App failed to start: \(String(reflecting: error))\n".utf8))
+            exit(1)
+        }
     }
 }

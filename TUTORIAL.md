@@ -157,18 +157,35 @@ struct AppModule: FlightModule {
 
 @main
 struct Main {
-    static func main() async throws {
-        try await Flight.bootstrap(
-            configuration: try Configuration.load(),
-            modules: [
-                FlightWebModule<FlightTransport>.self,
-                AppModule.self,
-                ActuatorModule.self,
-            ]
-        )
+    static func main() async {
+        do {
+            try await Flight.bootstrap(
+                configuration: try Configuration.load(),
+                modules: [
+                    FlightWebModule<FlightTransport>.self,
+                    AppModule.self,
+                    ActuatorModule.self,
+                ]
+            )
+        } catch {
+            FileHandle.standardError.write(
+                Data("App failed to start: \(String(reflecting: error))\n".utf8))
+            exit(1)
+        }
     }
 }
 ```
+
+`main` is `async`, not `async throws`, and that is worth a sentence. An error
+that escapes `main` is reported by the Swift runtime as "Fatal error: Error
+raised at top level", followed by a register dump and a backtrace. The two
+startup failures you will actually hit — Postgres not running, port 8080
+already bound — are not crashes and should not look like them.
+
+`String(reflecting:)` rather than plain interpolation because PostgresNIO
+redacts its `description` on purpose; the reflected form names the host, the
+port and the errno. That is safe on this path specifically: bootstrap has no
+user queries or bind values to leak, and the process is exiting anyway.
 
 `flightRegisterAll` does not exist in any file you wrote — the plugin
 generates it. It will be empty until Stage 1.4, and that is fine.
