@@ -101,7 +101,7 @@ struct New: AsyncParsableCommand {
             print("  docker run -d -e POSTGRES_PASSWORD=flight -e POSTGRES_DB=app_dev \\")
             print("             -p 55432:5432 postgres:16")
             print("  FLIGHT_DATABASE_URL=postgres://postgres:flight@127.0.0.1:55432/app_dev \\")
-            print("             swift run migrate up")
+            print("             swift run migrate apply")
         }
         print("  swift run \(project.value)")
     }
