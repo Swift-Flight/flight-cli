@@ -26,7 +26,7 @@ let package = Package(
         .executable(name: "App", targets: ["App"])
     ],
     dependencies: [
-        .package(url: "https://github.com/Swift-Flight/flight.git", from: "0.3.1", traits: ["Web"]),
+        .package(url: "https://github.com/Swift-Flight/flight.git", from: "0.7.0", traits: ["Web"]),
         .package(url: "https://github.com/Swift-Flight/flight-data.git", from: "0.1.2", traits: ["Postgres"]),
     ],
     targets: [
@@ -597,7 +597,7 @@ let package = Package(
     dependencies: [
         // "defaults" keeps the Web trait on; "Security" adds the resource
         // server. Naming any trait means "default" must be named too.
-        .package(url: "https://github.com/Swift-Flight/flight.git", from: "0.3.1", traits: ["Security"]),
+        .package(url: "https://github.com/Swift-Flight/flight.git", from: "0.7.0", traits: ["Security"]),
         .package(url: "https://github.com/Swift-Flight/flight-data.git", from: "0.2.0", traits: ["Postgres"]),
     ],
     targets: [
@@ -841,6 +841,69 @@ struct RoomChannel: Channel {
             "mentions": .array(message.mentions.map(JSONValue.string)),
             "sentAt": .string(message.sentAt.formatted(.iso8601)),
         ]
+    }
+}
+
+"""#,
+            "Sources/App/Controllers/AttachmentController.swift": #"""
+import FlightCore
+import FlightWeb
+import Foundation
+
+/// File upload, both halves of flight 0.7.0 at once: the handler takes
+/// `body: RequestBodyStream`, so the transport hands bytes through as they
+/// arrive instead of buffering the request — that (plus `maxBodyBytes:`
+/// overriding the global cap for just this route) is what lets an upload
+/// accept far more than any sane global body limit. The stream feeds
+/// `request.multipart()`, which parses parts without ever holding a file
+/// in memory.
+///
+/// The demo digests instead of storing: what to *do* with uploaded bytes
+/// (disk layout, object storage, virus scanning) is an application
+/// decision this template shouldn't make for you, while the wire handling
+/// is exactly what you'd keep. Swap the hasher loop for writes to your
+/// storage of choice and the rest stands.
+@Controller
+struct AttachmentController {
+
+    struct Received: Codable, ResponseEncodable {
+        let field: String
+        let filename: String?
+        let contentType: String?
+        let bytes: Int
+    }
+
+    @PostMapping("/attachments", maxBodyBytes: 64 << 20)
+    func upload(_ context: RequestContext, body: RequestBodyStream) async throws -> [Received] {
+        var received: [Received] = []
+        for try await part in try context.request.multipart() {
+            if part.filename != nil {
+                // A file part: consume the stream chunk by chunk. Constant
+                // memory no matter the size — this loop is where your
+                // storage write goes.
+                var bytes = 0
+                for try await chunk in part.body {
+                    bytes += chunk.count
+                }
+                received.append(
+                    Received(
+                        field: part.name,
+                        filename: part.filename,
+                        contentType: part.contentType?.essence,
+                        bytes: bytes))
+            } else {
+                // An ordinary form field riding along with the file.
+                let value = try await part.text()
+                received.append(
+                    Received(
+                        field: part.name, filename: nil, contentType: nil,
+                        bytes: value.utf8.count))
+            }
+        }
+        guard !received.isEmpty else {
+            throw HTTPError(.badRequest, "multipart body had no parts")
+        }
+        return received
     }
 }
 
@@ -2671,6 +2734,73 @@ struct Migrate: MigrateTool {
     static var migrations: [MigrationEntry] { _allMigrations() }
 }
 """#,
+            "Tests/AppTests/AttachmentControllerTests.swift": #"""
+import FlightCore
+import FlightWeb
+import FlightWebTesting
+import Foundation
+import Testing
+@testable import App
+
+/// The upload route, driven the way the transport drives it: the multipart
+/// body delivered as a live chunk stream, boundaries free to straddle chunk
+/// seams.
+@Suite("AttachmentController — streaming multipart upload")
+struct AttachmentControllerTests {
+
+    @Test("a file and its form fields arrive, sizes intact")
+    func uploadRoundTrip() async throws {
+        let container = try TestContainer.build {
+            Components(AttachmentController.self)
+        }
+        let client = try TestClient(container: container)
+
+        let boundary = "----DemoBoundary"
+        let filePayload = String(repeating: "b", count: 50_000)
+        let wire = Data(
+            ("--\(boundary)\r\n"
+                + "Content-Disposition: form-data; name=\"caption\"\r\n\r\n"
+                + "the quarterly chart\r\n"
+                + "--\(boundary)\r\n"
+                + "Content-Disposition: form-data; name=\"file\"; filename=\"chart.png\"\r\n"
+                + "Content-Type: image/png\r\n\r\n"
+                + filePayload + "\r\n"
+                + "--\(boundary)--").utf8)
+        // Awkward chunk sizes on purpose: the boundary WILL straddle seams.
+        let chunks = stride(from: 0, to: wire.count, by: 1_111).map {
+            Data(wire[$0..<min($0 + 1_111, wire.count)])
+        }
+
+        let response = await client.post(
+            "/attachments",
+            headers: [.contentType: "multipart/form-data; boundary=\(boundary)"],
+            bodyChunks: chunks)
+        #expect(response.status == .ok)
+
+        let received = try response.decodeJSON([AttachmentController.Received].self)
+        #expect(received.count == 2)
+        #expect(received[0].field == "caption")
+        #expect(received[0].bytes == "the quarterly chart".utf8.count)
+        #expect(received[1].filename == "chart.png")
+        #expect(received[1].contentType == "image/png")
+        #expect(received[1].bytes == 50_000)
+    }
+
+    @Test("a body that is not multipart is refused as a 415")
+    func nonMultipartRefused() async throws {
+        let container = try TestContainer.build {
+            Components(AttachmentController.self)
+        }
+        let client = try TestClient(container: container)
+        let response = await client.post(
+            "/attachments",
+            headers: [.contentType: "application/json"],
+            bodyChunks: [Data("{}".utf8)])
+        #expect(response.status == .unsupportedMediaType)
+    }
+}
+
+"""#,
             "Tests/AppTests/BootstrapTests.swift": #"""
 import FlightActuator
 import FlightCore
@@ -3604,7 +3734,7 @@ let package = Package(
         // resolved. "Web" is HTTP, WebSockets, Channels and Presence; add
         // "Security" for authentication. Naming neither gives you just the
         // container and lifecycle.
-        .package(url: "https://github.com/Swift-Flight/flight.git", from: "0.3.1", traits: ["Web"])
+        .package(url: "https://github.com/Swift-Flight/flight.git", from: "0.7.0", traits: ["Web"])
     ],
     targets: [
         .executableTarget(
