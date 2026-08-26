@@ -1294,10 +1294,23 @@ struct UserController {
         return user
     }
 
+    /// Wrapped in `Transactor.run`, like `POST /chatUser` and for the same
+    /// reason: `UserRepository.signup` is `@Transactional` and writes the
+    /// lobby announcement before the user, so a duplicate email has to roll
+    /// the announcement back. Without a coordinator bound around the call it
+    /// still *runs* — every write lands, nothing rolls back, and the
+    /// guarantee in that method's own doc comment is quietly false.
+    ///
+    /// This route did not bind one until a demo application built on Flight
+    /// hit the same thing. Flight Core now warns once per process when a
+    /// `@Transactional` method runs with no coordinator, which is the signal
+    /// that was missing.
     @PostMapping("/user")
     func upsertUser(_ context: RequestContext, body: CreateUserRequest) async throws -> Response {
         context.logger.info("Creating user")
         let service = try context.resolve(UserService.self)
+        let transactor = try context.resolve(Transactor.self)
+
         if let user = try await service.find(byEmail: body.email) {
             let changeset = Changeset(original: user)
             .change(\.email, body.email)
@@ -1305,10 +1318,16 @@ struct UserController {
             .validate(\.email, .email)
             context.logger.info("Upserting user")
             guard changeset.isValid else { throw HTTPError(.badRequest, "Invalid User") }
-            return try await .json(service.update(id: user.id, changeset: changeset))
+            let updated = try await transactor.run(in: context.scope) {
+                try await service.update(id: user.id, changeset: changeset)
+            }
+            return try .json(updated)
         }
 
-        return try await .json(service.signup(name: body.name, email: body.email))
+        let created = try await transactor.run(in: context.scope) {
+            try await service.signup(name: body.name, email: body.email)
+        }
+        return try .json(created)
     }
 
     // The transaction boundary lives here, at the handler, per Flight Data
