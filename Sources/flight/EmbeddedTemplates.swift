@@ -26,7 +26,7 @@ let package = Package(
         .executable(name: "App", targets: ["App"])
     ],
     dependencies: [
-        .package(url: "https://github.com/Swift-Flight/flight.git", from: "0.2.1", traits: ["Web"]),
+        .package(url: "https://github.com/Swift-Flight/flight.git", from: "0.3.1", traits: ["Web"]),
         .package(url: "https://github.com/Swift-Flight/flight-data.git", from: "0.1.2", traits: ["Postgres"]),
     ],
     targets: [
@@ -597,7 +597,7 @@ let package = Package(
     dependencies: [
         // "defaults" keeps the Web trait on; "Security" adds the resource
         // server. Naming any trait means "default" must be named too.
-        .package(url: "https://github.com/Swift-Flight/flight.git", from: "0.2.1", traits: ["Security"]),
+        .package(url: "https://github.com/Swift-Flight/flight.git", from: "0.3.1", traits: ["Security"]),
         .package(url: "https://github.com/Swift-Flight/flight-data.git", from: "0.2.0", traits: ["Postgres"]),
     ],
     targets: [
@@ -1030,12 +1030,15 @@ struct ChatController {
 
     /// `POST /rooms` — room and opening message as one named `Multi`.
     ///
-    /// Note what is *absent*: no `Transactor.run`. `Transactor` binds the
-    /// `@Transactional` coordinator, and this unit of work drives its
-    /// transaction through Hangar instead (`Multi` opens one of its own).
-    /// Interleaving the two is a documented mistake — neither coordinator
-    /// sees the other's nesting — so a handler picks one. `POST /chatUser`
-    /// on `UserController` is the other choice, made the other way.
+    /// `Transactions` middleware binds the `@Transactional` coordinator
+    /// around every request, this one included — but this handler never
+    /// calls a `@Transactional` method, so that binding just sits there
+    /// unused. Its own unit of work drives a transaction through Hangar
+    /// instead (`Multi` opens one of its own). What is genuinely a mistake
+    /// is a `@Transactional` method *also* using `Multi` in the same call —
+    /// neither coordinator sees the other's nesting — not the two merely
+    /// being present in the same request. `POST /chatUser` on
+    /// `UserController` is the other choice, made the other way.
     @PostMapping("/rooms")
     func openRoom(_ context: RequestContext, body: OpenRoomRequest) async throws -> Response {
         let chat = try context.resolve(ChatRepository.self)
@@ -1294,22 +1297,22 @@ struct UserController {
         return user
     }
 
-    /// Wrapped in `Transactor.run`, like `POST /chatUser` and for the same
-    /// reason: `UserRepository.signup` is `@Transactional` and writes the
-    /// lobby announcement before the user, so a duplicate email has to roll
-    /// the announcement back. Without a coordinator bound around the call it
-    /// still *runs* — every write lands, nothing rolls back, and the
-    /// guarantee in that method's own doc comment is quietly false.
+    /// `UserRepository.signup` is `@Transactional` and writes the lobby
+    /// announcement before the user, so a duplicate email has to roll the
+    /// announcement back. That guarantee depends on a coordinator being
+    /// bound around this call — which, since `Transactions` middleware
+    /// binds one around every request, this handler gets for free rather
+    /// than needing to ask for.
     ///
-    /// This route did not bind one until a demo application built on Flight
-    /// hit the same thing. Flight Core now warns once per process when a
-    /// `@Transactional` method runs with no coordinator, which is the signal
-    /// that was missing.
+    /// A demo application built on Flight shipped a route that forgot to
+    /// bind one by hand: every write still landed, nothing rolled back, and
+    /// the guarantee in `signup`'s own doc comment was quietly false.
+    /// `@Middleware` is what turned "every handler must remember" into
+    /// "nothing to remember" — see `Web/Transactions.swift`.
     @PostMapping("/user")
     func upsertUser(_ context: RequestContext, body: CreateUserRequest) async throws -> Response {
         context.logger.info("Creating user")
         let service = try context.resolve(UserService.self)
-        let transactor = try context.resolve(Transactor.self)
 
         if let user = try await service.find(byEmail: body.email) {
             let changeset = Changeset(original: user)
@@ -1318,29 +1321,18 @@ struct UserController {
             .validate(\.email, .email)
             context.logger.info("Upserting user")
             guard changeset.isValid else { throw HTTPError(.badRequest, "Invalid User") }
-            let updated = try await transactor.run(in: context.scope) {
-                try await service.update(id: user.id, changeset: changeset)
-            }
+            let updated = try await service.update(id: user.id, changeset: changeset)
             return try .json(updated)
         }
 
-        let created = try await transactor.run(in: context.scope) {
-            try await service.signup(name: body.name, email: body.email)
-        }
+        let created = try await service.signup(name: body.name, email: body.email)
         return try .json(created)
     }
 
-    // The transaction boundary lives here, at the handler, per Flight Data
-    // Postgres's own convention: "A handler that already has a request scope
-    // binds it" — the request scope (context.scope) only exists at this
-    // layer, so this is where Transactor.run wraps the unit of work.
     @PostMapping("/chatUser")
     func createUser(_ context: RequestContext, body: CreateUserRequest) async throws -> Response {
         let service = try context.resolve(UserService.self)
-        let transactor = try context.resolve(Transactor.self)
-        let user = try await transactor.run(in: context.scope) {
-            try await service.signup(name: body.name, email: body.email)
-        }
+        let user = try await service.signup(name: body.name, email: body.email)
         return try .json(user, status: .created)
     }
 }
@@ -1585,16 +1577,13 @@ struct AppModule: FlightModule {
     func configure(_ container: Container) throws {
         try flightRegisterAll(container)
 
-        // Middleware are components too: same pipeline, hand-registered here.
-        container.registerMiddleware("request-log", order: 0) { context in
-            context.logger.info("→ \(context.request.method.rawValue) \(context.request.path)")
-            return .continue
-        }
-
-        // Manual registration — the escape hatch beside the macro pipeline,
-        // for components whose factory needs the Container itself.
-        container.register(Transactor.self, scope: .singleton) { c in
-            Transactor(container: c)
+        // Order is declared once, here, top to bottom, outermost first —
+        // RequestLogging sees the true wall-clock time of everything below
+        // it, and Transactions runs before anything that might write, so no
+        // handler can begin a unit of work with no coordinator bound.
+        container.pipeline {
+            RequestLogging.self
+            Transactions.self
         }
 
         // The gateway, and the two things that depend on it. All three are
@@ -2432,8 +2421,9 @@ struct UserService {
     }
 
     /// The @Transactional boundary lives on the repository method; this just
-    /// forwards. Whether it actually runs in a transaction depends on the
-    /// caller binding a coordinator around this call — see Transactor.
+    /// forwards. `Transactions` middleware binds a coordinator around every
+    /// request, so this runs in a real transaction whenever it is called
+    /// from a handler — see `Web/Transactions.swift`.
     func signup(name: String, email: String) async throws -> User {
         let changeset = Changeset(User.self)
             .change(\.name, name)
@@ -2451,21 +2441,56 @@ struct UserService {
 }
 
 """#,
-            "Sources/App/Support.swift": #"""
+            "Sources/App/Web/RequestLogging.swift": #"""
+import FlightCore
+import FlightWeb
+
+/// Logs the method and path of every request as it arrives.
+@Middleware
+struct RequestLogging: Sendable {
+    func handle(_ context: RequestContext, next: Next) async throws -> Response {
+        context.logger.info("→ \(context.request.method.rawValue) \(context.request.path)")
+        return try await next(context)
+    }
+}
+
+"""#,
+            "Sources/App/Web/Transactions.swift": #"""
 import FlightCore
 import FlightDataPostgres
+import FlightWeb
 
-/// Binds Scope.active + the Postgres transaction coordinator (both
-/// task-locals) around a unit of work in an existing scope — the request
-/// scope, here. Without this, @Transactional methods run under Flight Core's
-/// documented no-op default: they execute, but atomicity silently isn't
-/// there. Handlers don't hold the Container directly, so this component captures
-/// it once at registration.
-struct Transactor: Sendable {
-    let container: Container
+/// Binds `Scope.active` and the Postgres transaction coordinator around
+/// every request, so `@Transactional` means something.
+///
+/// Without this, a `@Transactional` method still *runs* — every write
+/// lands, nothing rolls back, and the guarantee in that method's own doc
+/// comment is quietly false. A demo application built on Flight shipped
+/// exactly that bug, in a single handler that forgot to bind a coordinator
+/// by hand; `@Middleware` exists so no handler has to remember to.
+@Middleware
+struct Transactions: Sendable {
+    @Autowired var container: Container
 
-    func run<T>(in scope: Scope, _ body: () async throws -> T) async throws -> T {
-        try await container.withPostgresTransactions(in: scope, body)
+    func handle(_ context: RequestContext, next: Next) async throws -> Response {
+        // Not for WebSocket upgrades — a request scope normally dies when
+        // the response is written, but an upgraded one lives as long as
+        // the socket, and binding here would check out a pool connection
+        // for as long as the tab stays open.
+        guard context.request.headers[.upgrade] == nil else {
+            return try await next(context)
+        }
+        do {
+            return try await container.withPostgresTransactions(in: context.scope) {
+                try await next(context)
+            }
+        } catch let error as DataSourceError {
+            context.logger.warning("pool exhausted: \(error)")
+            return Response.status(.serviceUnavailable).settingHeader(.retryAfter, "1")
+        } catch {
+            context.logger.error("could not bind transactions: \(error)")
+            return .status(.internalServerError)
+        }
     }
 }
 
@@ -3579,7 +3604,7 @@ let package = Package(
         // resolved. "Web" is HTTP, WebSockets, Channels and Presence; add
         // "Security" for authentication. Naming neither gives you just the
         // container and lifecycle.
-        .package(url: "https://github.com/Swift-Flight/flight.git", from: "0.2.1", traits: ["Web"])
+        .package(url: "https://github.com/Swift-Flight/flight.git", from: "0.3.1", traits: ["Web"])
     ],
     targets: [
         .executableTarget(

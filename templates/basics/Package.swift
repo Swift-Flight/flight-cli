@@ -15,7 +15,7 @@ let package = Package(
         .executable(name: "App", targets: ["App"])
     ],
     dependencies: [
-        .package(url: "https://github.com/Swift-Flight/flight.git", from: "0.2.1", traits: ["Web"]),
+        .package(url: "https://github.com/Swift-Flight/flight.git", from: "0.3.1", traits: ["Web"]),
         .package(url: "https://github.com/Swift-Flight/flight-data.git", from: "0.1.2", traits: ["Postgres"]),
     ],
     targets: [

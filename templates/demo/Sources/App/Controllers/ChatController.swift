@@ -182,12 +182,15 @@ struct ChatController {
 
     /// `POST /rooms` — room and opening message as one named `Multi`.
     ///
-    /// Note what is *absent*: no `Transactor.run`. `Transactor` binds the
-    /// `@Transactional` coordinator, and this unit of work drives its
-    /// transaction through Hangar instead (`Multi` opens one of its own).
-    /// Interleaving the two is a documented mistake — neither coordinator
-    /// sees the other's nesting — so a handler picks one. `POST /chatUser`
-    /// on `UserController` is the other choice, made the other way.
+    /// `Transactions` middleware binds the `@Transactional` coordinator
+    /// around every request, this one included — but this handler never
+    /// calls a `@Transactional` method, so that binding just sits there
+    /// unused. Its own unit of work drives a transaction through Hangar
+    /// instead (`Multi` opens one of its own). What is genuinely a mistake
+    /// is a `@Transactional` method *also* using `Multi` in the same call —
+    /// neither coordinator sees the other's nesting — not the two merely
+    /// being present in the same request. `POST /chatUser` on
+    /// `UserController` is the other choice, made the other way.
     @PostMapping("/rooms")
     func openRoom(_ context: RequestContext, body: OpenRoomRequest) async throws -> Response {
         let chat = try context.resolve(ChatRepository.self)

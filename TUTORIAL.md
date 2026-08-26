@@ -882,9 +882,9 @@ Guarding a route is a line in the handler:
 try context.requireRole("moderator")
 ```
 
-401 with no principal, 403 with the wrong one. Registering
-`requireAuthentication` as middleware instead protects *every* route — right
-for an internal service, wrong for an app whose reads are public.
+401 with no principal, 403 with the wrong one. Listing `RequireAuthentication`
+in `container.pipeline { }` instead protects *every* route — right for an
+internal service, wrong for an app whose reads are public.
 
 ## Stage 3.3 — A channel
 

@@ -29,8 +29,9 @@ struct UserService {
     }
 
     /// The @Transactional boundary lives on the repository method; this just
-    /// forwards. Whether it actually runs in a transaction depends on the
-    /// caller binding a coordinator around this call — see Transactor.
+    /// forwards. `Transactions` middleware binds a coordinator around every
+    /// request, so this runs in a real transaction whenever it is called
+    /// from a handler — see `Web/Transactions.swift`.
     func signup(name: String, email: String) async throws -> User {
         let changeset = Changeset(User.self)
             .change(\.name, name)

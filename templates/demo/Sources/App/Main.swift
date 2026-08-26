@@ -43,16 +43,13 @@ struct AppModule: FlightModule {
     func configure(_ container: Container) throws {
         try flightRegisterAll(container)
 
-        // Middleware are components too: same pipeline, hand-registered here.
-        container.registerMiddleware("request-log", order: 0) { context in
-            context.logger.info("→ \(context.request.method.rawValue) \(context.request.path)")
-            return .continue
-        }
-
-        // Manual registration — the escape hatch beside the macro pipeline,
-        // for components whose factory needs the Container itself.
-        container.register(Transactor.self, scope: .singleton) { c in
-            Transactor(container: c)
+        // Order is declared once, here, top to bottom, outermost first —
+        // RequestLogging sees the true wall-clock time of everything below
+        // it, and Transactions runs before anything that might write, so no
+        // handler can begin a unit of work with no coordinator bound.
+        container.pipeline {
+            RequestLogging.self
+            Transactions.self
         }
 
         // The gateway, and the two things that depend on it. All three are
