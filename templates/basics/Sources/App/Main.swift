@@ -21,6 +21,20 @@ struct AppModule: FlightModule {
 
     func configure(_ container: Container) throws {
         try flightRegisterAll(container)
+
+        // `@Repository` registers the concrete type — `UserRepository` — and
+        // only that. Controllers depend on `UserRepositoryProtocol` instead,
+        // which is the whole point of the seam (see UserRepositoryProtocol.swift),
+        // so the binding from protocol to implementation is stated here.
+        // Without it the routes compile and the tests pass — the suite
+        // registers its own fake against the same protocol — and every
+        // request fails at runtime with "No component registered".
+        //
+        // `.scoped` matches the repository's own lifetime: one instance per
+        // request, holding that request's connection.
+        container.register((any UserRepositoryProtocol).self, scope: .scoped) { c in
+            try UserRepository(_flight: c)
+        }
     }
 }
 
